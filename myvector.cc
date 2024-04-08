@@ -1380,8 +1380,7 @@ extern "C" char *myvector_display(UDF_INIT *initid, UDF_ARGS *args, char *result
   }
 #endif
 
-  // int    dims = MyVectorDimFromStorageLength(args->lengths[0]);
-  int dims = args->lengths[0] / sizeof(FP32);
+  int    dims = MyVectorDimFromStorageLength(args->lengths[0]);
   
   ostr << "[";
   ostr << setprecision(precision);
