@@ -31,6 +31,7 @@
 #include <thread>
 #include <vector>
 #include <list>
+#include <set>
 #include <mutex>
 #include <shared_mutex>
 
@@ -58,6 +59,13 @@ extern REQUIRES_SERVICE_PLACEHOLDER(mysql_string_factory);
 
 #include <mysql/service_plugin_registry.h>
 
+#define SET_UDF_ERROR_AND_RETURN(...) \
+  { \
+    my_plugin_log_message(&gplugin, MY_ERROR_LEVEL, __VA_ARGS__); \
+    *error = 1; \
+    return (result); \
+  }
+
 extern my_service<SERVICE_TYPE(mysql_udf_metadata)> *h_udf_metadata_service;
 
 class AbstractVectorIndex;
@@ -69,6 +77,7 @@ class AbstractVectorIndex;
    2. If INT variant primary key is not possible, user can add a
       AUTO INCREMENT with UNIQUE index column.
 */
+
 typedef size_t KeyTypeInteger;
 
 
@@ -80,6 +89,8 @@ typedef size_t KeyTypeInteger;
       Add template<class T> before the functions/classes.
  */
 typedef float       FP32;
+
+typedef void*       VectorPtr;
 
 /* Each serialized vector has 4 bytes of metadata.
  * Byte 1 - MyVector vector format version
@@ -94,8 +105,13 @@ static const unsigned int MYVECTOR_VECTOR_FP32 = 0x01;
 
 static const unsigned int MYVECTOR_VECTOR_FP16 = 0x02;
 
+static const unsigned int MYVECTOR_VECTOR_BV   = 0x04;
+
 #define MYVECTOR_V1_FP32_METADATA \
    ((MYVECTOR_VECTOR_FP32 << 8) | MYVECTOR_VERSION_V1)
+
+#define MYVECTOR_V1_BV_METADATA \
+    ((MYVECTOR_VECTOR_BV  << 8) | MYVECTOR_VERSION_V1)
 
 /* Maximum length of string that can be passed to myvector_construct(). */
   
@@ -126,13 +142,23 @@ static const unsigned long MYVECTOR_MIN_VALID_UPDATE_TS = 1704047400;
 /* Parallel threads are started after 100K vectors + keys have been batch'ed up */
 static const unsigned int HNSW_PARALLEL_BUILD_UNIT_SIZE = 100000;
 
+/* Bit packing for Binary Vectors */
+static const unsigned int BITS_PER_BYTE                 = 8;
+
 extern MYSQL_PLUGIN gplugin;
 extern char *myvector_index_dir;
 
 char *latin1 = const_cast<char *>("latin1");
 
+const set<string> MYVECTOR_INDEX_TYPES{"KNN", "HNSW", "HNSW_BV"};
+
 /* A generic key-value map for options */
 typedef unordered_map<string, string> OptionsMap;
+
+inline bool isValidIndexType(string &indextype) {
+  return (MYVECTOR_INDEX_TYPES.find(indextype) !=
+            MYVECTOR_INDEX_TYPES.end());
+}
 
 inline int MyVectorStorageLength(int dim)
 {
@@ -142,6 +168,16 @@ inline int MyVectorStorageLength(int dim)
 inline int MyVectorDimFromStorageLength(int length)
 {
   return (length - MYVECTOR_COLUMN_EXTRA_LEN) / sizeof(FP32);
+}
+
+inline int MyVectorBVStorageLength(int dim)
+{
+  return (dim / BITS_PER_BYTE) + MYVECTOR_COLUMN_EXTRA_LEN;
+}
+
+inline int MyVectorBVDimFromStorageLength(int length)
+{
+  return (length - MYVECTOR_COLUMN_EXTRA_LEN) * BITS_PER_BYTE;
 }
 
 /* Trim leading & trailing spaces */
@@ -179,6 +215,7 @@ class MyVectorOptions {
       const char *ptr1 = line;
       if (strchr(line,'|')) { // start marker
         ptr1 = strchr(line,'|');
+        ptr1++;
       }
       string          sline(ptr1);
       vector<string>  listoptions;
@@ -272,6 +309,67 @@ double computeCosineDistance(FP32 *v1, FP32 *v2, int dim)
   return (1 - dist);
 }
 
+float HammingDistanceFn(const void* __restrict pVect1, const void* __restrict pVect2, const void* __restrict qty_ptr) {
+
+    size_t qty = *((size_t*)qty_ptr); // dimension of the vector
+    float dist = 0;
+    unsigned long ldist = 0;
+    unsigned long* a = (unsigned long*)pVect1;
+    unsigned long* b = (unsigned long*)pVect2;
+
+    /* Hamming Distance between 2 byte sequences - Number of bit positions
+     * matching/different in both the sequences. In the plugin, we calculate
+     * the diff'ing bit positions and that is the distance. Thus smaller
+     * distance implies the vectors are 'nearer'/'similar' to each other.
+     */
+    // TODO - Use AVX2/AVX512 or try __builtin_popcountll()
+    size_t iter = (qty / (sizeof(unsigned long) * BITS_PER_BYTE));
+    for (size_t i = 0; i < iter; i++) {
+       unsigned long res = (*a ^ *b); a++; b++;
+#ifdef SLOW_CODE
+       while (res > 0) {
+         ldist += (res & 1);
+         res >>= 1;
+       }
+#endif
+       ldist += __builtin_popcountll(res);
+    }
+
+    dist = ldist;
+    // debug_print("hamming distance return  = %lu", ldist);
+    return dist;
+}
+
+/* HammingBinaryVectorSpace : Implement hnswlib's SpaceInterface for
+ * Hamming Distance based HNSW index for Binary Vectors.
+ */
+class HammingBinaryVectorSpace : public hnswlib::SpaceInterface<float> {
+    hnswlib::DISTFUNC<float> fstdistfunc_;
+    size_t data_size_;
+    size_t dim_;
+
+ public:
+    HammingBinaryVectorSpace(size_t dim) {
+        fstdistfunc_ = HammingDistanceFn;
+        dim_         = dim;
+        data_size_   = (dim / BITS_PER_BYTE); // 1 bit per dimension
+    }
+
+    size_t get_data_size() {
+        return data_size_;
+    }
+
+    hnswlib::DISTFUNC<float> get_dist_func() {
+        return fstdistfunc_;
+    }
+
+    void *get_dist_func_param() {
+        return &dim_;
+    }
+
+    ~HammingBinaryVectorSpace() {}
+};
+
 /* Interface for various types of vector indexes. Initial design is based
  * on 2 index types - 1) KNN in-memory using vector<> and priority_queue<>
  * 2) HNSW in-memory with persistence from hnswlib.
@@ -317,12 +415,12 @@ class AbstractVectorIndex
           virtual bool closeIndex()                   = 0;
 
           /* searchVectorNN - search and return 'n' Nearest Neighbours */
-          virtual bool searchVectorNN(FP32 *qvec, int dim,
+          virtual bool searchVectorNN(VectorPtr qvec, int dim,
                           vector<KeyTypeInteger> &nnkeys,
                           int n) = 0;
 
           /* insertVectortor - insert a vector into the index */
-          virtual bool insertVector(FP32 *vec, int dim, KeyTypeInteger id) = 0;
+          virtual bool insertVector(VectorPtr vec, int dim, KeyTypeInteger id) = 0;
 
           /* startParallelBuild - User has initiated parallel index build/rebuild */
           virtual bool startParallelBuild(int nthreads) = 0;
@@ -373,9 +471,9 @@ class KNNIndex : public AbstractVectorIndex
           string getName() { return m_name; }
           string getType() { return "KNN"; }
 
-          bool searchVectorNN(FP32 *qvec, int dim,
+          bool searchVectorNN(VectorPtr qvec, int dim,
                           vector<KeyTypeInteger> &keys, int n);
-          bool insertVector(FP32 *vec, int dim, KeyTypeInteger id);
+          bool insertVector(VectorPtr vec, int dim, KeyTypeInteger id);
 
           bool        supportsIncrUpdates()
           { return true; }
@@ -424,7 +522,7 @@ KNNIndex::KNNIndex(const string &name, const string &options)
 /* Brute-force, exact search KNN implemented using in-memory vector<> and
  * priority queue. Potentially faster than SELECT ... ORDER BY myvector_distance()
  */
-bool KNNIndex::searchVectorNN(FP32 *qvec, int dim, vector<KeyTypeInteger> &keys, int n)
+bool KNNIndex::searchVectorNN(VectorPtr qvec, int dim, vector<KeyTypeInteger> &keys, int n)
 {
   priority_queue< pair<FP32,KeyTypeInteger> > pq;
   keys.clear();
@@ -432,7 +530,7 @@ bool KNNIndex::searchVectorNN(FP32 *qvec, int dim, vector<KeyTypeInteger> &keys,
   /* Use priority queue to find out 'n' neighbours with least distance */
   for (auto row : m_vectors) {
     vector<FP32> &a = row.first;
-    double dist = computeCosineDistance(qvec, a.data(), dim);
+    double dist = computeCosineDistance((FP32 *)qvec, a.data(), dim);
     if (pq.size() < n)
       pq.push({dist, row.second});
     else {
@@ -456,9 +554,10 @@ bool KNNIndex::searchVectorNN(FP32 *qvec, int dim, vector<KeyTypeInteger> &keys,
 }
 
 /* insertVector - just stash the vector into in-memory vector<> collection */
-bool KNNIndex::insertVector(FP32 *vec, int dim, KeyTypeInteger id)
+bool KNNIndex::insertVector(VectorPtr vec, int dim, KeyTypeInteger id)
 {
-  vector<FP32> row(vec, vec + dim);
+  FP32 *fvec = static_cast<FP32 *>(vec);
+  vector<FP32> row(fvec, fvec + dim);
   m_vectors.push_back({row, id}); // simple, demo purpose index
 
   m_n_rows++;
@@ -522,12 +621,12 @@ class HNSWMemoryIndex : public AbstractVectorIndex
 
           string getName() { return m_name; }
 
-          string getType() { return "HNSW"; }
+          string getType() { return m_type; }
 
-          bool searchVectorNN(FP32 *qvec, int dim, vector<KeyTypeInteger> &keys,
+          bool searchVectorNN(VectorPtr qvec, int dim, vector<KeyTypeInteger> &keys,
                           int n);
           
-          bool insertVector(FP32 *vec, int dim, KeyTypeInteger id);
+          bool insertVector(VectorPtr vec, int dim, KeyTypeInteger id);
 
 
           int getDimension()                  { return m_dim; }
@@ -542,6 +641,7 @@ class HNSWMemoryIndex : public AbstractVectorIndex
 
   private:
     string        m_name;
+    string        m_type;
     string        m_options;
     MyVectorOptions m_optionsMap;
     unsigned long   m_updateTs;
@@ -553,7 +653,8 @@ class HNSWMemoryIndex : public AbstractVectorIndex
     int         m_size;
           
     hnswlib::HierarchicalNSW<FP32> *m_alg_hnsw = nullptr;
-    hnswlib::L2Space* m_space = nullptr;
+    //hnswlib::L2Space* m_space = nullptr;
+     hnswlib::SpaceInterface<float>* m_space = nullptr;
 
 
     atomic<unsigned long>    m_n_rows{0};
@@ -562,12 +663,14 @@ class HNSWMemoryIndex : public AbstractVectorIndex
     bool                     m_isDirty;
 
     /* Temporary store for multi-threaded, parallel index build */
-    vector<FP32>           m_batch;
+    vector<char>           m_batch;
     vector<KeyTypeInteger> m_batchkeys;
     bool                   m_isParallelBuild{false};
 
     bool                   flushBatchParallel();
     bool                   flushBatchSerial();
+
+    hnswlib::SpaceInterface<float>* getSpace(size_t dim);
 
     int                    m_threads;
 
@@ -582,11 +685,12 @@ HNSWMemoryIndex::HNSWMemoryIndex(const string &name, const string &options)
   m_ef_construction   = atoi(m_optionsMap.getOption("ef").c_str());
   m_ef_search         = m_ef_construction;
   m_M                 = atoi(m_optionsMap.getOption("M").c_str());
+  m_type              = m_optionsMap.getOption("type"); // Supports HNSW and HNSW_BV
 
   if (m_optionsMap.getOption("ef_search").length())
     m_ef_search = atoi(m_optionsMap.getOption("ef_search").c_str());
 
-  debug_print("hnsw index params %s %d %d %d %d %d", name.c_str(), m_dim,
+  debug_print("hnsw index params %s %s  %d %d %d %d %d", name.c_str(), m_type.c_str(), m_dim,
                m_size, m_ef_construction, m_ef_search, m_M);
 
 }
@@ -600,7 +704,8 @@ bool HNSWMemoryIndex::initIndex()
 {
   debug_print("hnsw initIndexO %p %s %d %d %d %d %d", this, m_name.c_str(), m_dim,
                m_size, m_ef_construction, m_ef_search, m_M);
-  m_space    = new hnswlib::L2Space(m_dim);
+  //m_space    = new hnswlib::L2Space(m_dim);
+  m_space    = getSpace(m_dim);
   m_alg_hnsw = new hnswlib::HierarchicalNSW<FP32>(m_space, m_size,
                      m_M, m_ef_construction);
 
@@ -628,8 +733,9 @@ bool HNSWMemoryIndex::saveIndex(const string &path)
   unlink(statusf.c_str());
 
   string filename = path + "/" + m_name + ".hnsw.index";
-  
-  m_alg_hnsw->saveIndex(filename); // HNSWLib method
+ 
+  // hnswlib method for full write/rewrite. Expect 10GB to take 10 secs. 
+  m_alg_hnsw->saveIndex(filename);
 
   ofstream sf(statusf, ios::out | ios::binary);
   sf.write((char *)&m_updateTs, sizeof(m_updateTs));
@@ -646,7 +752,8 @@ bool HNSWMemoryIndex::loadIndex(const string &path)
   if (m_alg_hnsw) delete m_alg_hnsw;
   if (m_space)    delete m_space;
 
-  m_space =  new hnswlib::L2Space(m_dim);
+  //m_space =  new hnswlib::L2Space(m_dim);
+  m_space    = getSpace(m_dim);
   
   string indexfile = path + "/" + m_name + ".hnsw.index";
   string statusf   = path + "/" + m_name + ".hnsw.index" + ".safe";
@@ -655,25 +762,45 @@ bool HNSWMemoryIndex::loadIndex(const string &path)
   ifstream f(statusf, ios::in | ios :: binary);
   if (f.good()) {
     ifstream f2(indexfile);
-    if (f2.good()) readindex = true;
+    if (f2.good())
+      readindex = true;
+    else
+      my_plugin_log_message(&gplugin, MY_ERROR_LEVEL, 
+        "Index file %s not found.", indexfile.c_str());
+  }
+  else {
+    my_plugin_log_message(&gplugin, MY_ERROR_LEVEL, 
+      "Index status file %s not found.", statusf.c_str());
   }
   if (!readindex) {
+    return false;
   }
 
   unsigned long lastupdatets = 0;
   f.read((char *)&lastupdatets, sizeof(lastupdatets));
 
   if (lastupdatets < MYVECTOR_MIN_VALID_UPDATE_TS) {
+    my_plugin_log_message(&gplugin, MY_ERROR_LEVEL, 
+      "Invalid last update timestamp %lu in %s.", lastupdatets, statusf.c_str());
     return false;
   }
 
   debug_print("Loading HNSW index %s from %s, last update timestamp = %lu",
               m_name.c_str(), indexfile.c_str(), lastupdatets);
-  m_alg_hnsw = new hnswlib::HierarchicalNSW<FP32>(m_space, indexfile);
+
+  /* hnswlib throws std::runtime_error for errors */
+  try {
+    m_alg_hnsw = new hnswlib::HierarchicalNSW<FP32>(m_space, indexfile);
+  } catch (std::runtime_error &e) {
+    my_plugin_log_message(&gplugin, MY_ERROR_LEVEL, 
+      "Error loading hnsw index (%s) from file : %s", m_name.c_str(), e.what());
+    return false;
+  }
+
 
   m_alg_hnsw->setEf(m_ef_search);
 
-  setUpdateTs(lastupdatets);
+  setUpdateTs(lastupdatets); // in-memory
 
   return true;
 }
@@ -699,8 +826,18 @@ bool HNSWMemoryIndex::dropIndex(const string &path)
 bool HNSWMemoryIndex::closeIndex() {
   return true;
 }
+    
+hnswlib::SpaceInterface<float>* HNSWMemoryIndex::getSpace(size_t dim) {
+  debug_print("getSpace for %s",m_type.c_str());
+  if (m_type == "HNSW") 
+    return new hnswlib::L2Space(m_dim);
+  else if (m_type == "HNSW_BV")
+    return new HammingBinaryVectorSpace(m_dim);
 
-bool HNSWMemoryIndex::searchVectorNN(FP32 *qvec, int dim,
+  return nullptr;
+}
+
+bool HNSWMemoryIndex::searchVectorNN(VectorPtr qvec, int dim,
                           vector<KeyTypeInteger> &keys,
                           int n) {
 
@@ -786,7 +923,7 @@ bool HNSWMemoryIndex::startParallelBuild(int nthreads)
 bool HNSWMemoryIndex::flushBatchSerial() {
   debug_print("flushBatchSerial %lu", m_batchkeys.size());
   for (unsigned int i = 0; i < m_batchkeys.size(); i++) {
-    m_alg_hnsw->addPoint((void *)&(m_batch[i * m_dim]), m_batchkeys[i]);
+    m_alg_hnsw->addPoint((void *)&(m_batch[i * m_space->get_data_size()]), m_batchkeys[i]);
   }
   return true;
 }
@@ -798,7 +935,7 @@ bool HNSWMemoryIndex::flushBatchParallel() {
      * hnswlib:example_search_mt.cpp.
      */
     ParallelFor(0, m_batchkeys.size(), m_threads, [&](size_t row, size_t threadId) {
-        m_alg_hnsw->addPoint((void*)&(m_batch[row * m_dim]), m_batchkeys[row]);
+        m_alg_hnsw->addPoint((void*)&(m_batch[row * m_space->get_data_size()]), m_batchkeys[row]);
     });
 
     m_batch.clear();
@@ -807,16 +944,18 @@ bool HNSWMemoryIndex::flushBatchParallel() {
     return true;
 }
 
-bool HNSWMemoryIndex::insertVector(FP32 *vec, int dim, KeyTypeInteger id) {
+bool HNSWMemoryIndex::insertVector(VectorPtr vec, int dim, KeyTypeInteger id) {
+  FP32 *fvec = static_cast<FP32 *>(vec);
   if (m_isParallelBuild) {
-    m_batch.insert(m_batch.end(), vec, vec + m_dim);
+    //m_batch.insert(m_batch.end(), fvec, fvec + m_dim);
+    m_batch.insert(m_batch.end(), (char *)vec, ((char *)vec + m_space->get_data_size()));
     m_batchkeys.push_back(id);
 
     if (m_batchkeys.size() == HNSW_PARALLEL_BUILD_UNIT_SIZE) {
       flushBatchParallel();
     }
   } else {
-    m_alg_hnsw->addPoint(vec, id);
+    m_alg_hnsw->addPoint(fvec, id);
   }
 
   m_n_rows++; // atomic
@@ -853,10 +992,11 @@ AbstractVectorIndex* VectorIndexCollection::open(const string &name,
 
   lock_guard<mutex> l(m_mutex);
 
-  debug_print("Opening new index %s %s", name.c_str(), useraction.c_str());
+  debug_print("Opening new index %s %s %s", name.c_str(), options.c_str(), useraction.c_str());
 
   AbstractVectorIndex *hnewindex = nullptr;
 
+  /* First case handles both HNSW and HNSW_BV */
   if (options.rfind("type=HNSW") != string::npos) {
     hnewindex = new HNSWMemoryIndex(name, options);
   }
@@ -967,8 +1107,12 @@ bool rewriteMyVectorColumnDef(const string &query, string &newQuery) {
        break;
      }
 
-     if (vo.getOption("type") == "")
+     string vtype = vo.getOption("type");
+     if (vtype == "") {
        colinfo = MYVECTOR_DEFAULT_INDEX_TYPE + "," + colinfo;
+       vtype   = "KNN"; // TODO
+       vo.setOption("type",vtype);
+     }
 
      if (vo.getOption("dim") == "") {
        my_plugin_log_message(&gplugin, MY_ERROR_LEVEL, 
@@ -993,7 +1137,11 @@ bool rewriteMyVectorColumnDef(const string &query, string &newQuery) {
        break;
      }
 
-     size_t varblength = MyVectorStorageLength(dim);
+     size_t varblength = 0;
+     if (vtype != "HNSW_BV")
+       varblength = MyVectorStorageLength(dim);
+     else
+       varblength = MyVectorBVStorageLength(dim); // binary vector
 
      string newColumn;
      newColumn = "VARBINARY(" + to_string(varblength) +
@@ -1259,6 +1407,92 @@ extern "C" char* myvector_ann_set(UDF_INIT *initid, UDF_ARGS *args, char *result
   return result;
 }
 
+/* SQFloatVectorToBinaryVector - Simple scalar quantization to convert
+ * a sequence of natice floats to a binary vector. If the float value is
+ * greater than 0, then corresponding bit is set to 1 in the binary vector.
+ */
+int SQFloatVectorToBinaryVector(FP32 *fvec, unsigned long *ivec, int dim)
+{
+  memset(ivec, 0, (dim / BITS_PER_BYTE ));  // 3rd param is bytes
+
+  unsigned long elem = 0;
+  unsigned long idx  = 0;
+
+  for (int i = 0; i < dim; i++) {
+    elem = elem << 1;
+    if (fvec[i] > 0) {
+      elem = elem | 1;
+    }
+    if (((i + 1) % 64) == 0) { // 8 bytes packed (i.e 64 dims in 1 ulong)
+      ivec[idx] = elem;
+      elem = 0; idx++;
+    }
+  }
+  return (idx * sizeof(unsigned long)); // number of bytes
+}
+
+char *myvector_construct_bv(const std::string &srctype, char *src, char *dst,
+                          unsigned long srclen, unsigned long *length,
+                          unsigned char *is_null, unsigned char *error) {
+  int retlen = 0;
+
+  if (srctype == "bv") {
+    memcpy(dst, src, srclen); // src is bytes representing the binary vector
+    retlen = srclen;
+  }
+  else if (srctype == "float") {
+    int dim = MyVectorDimFromStorageLength(srclen);
+    retlen =
+      SQFloatVectorToBinaryVector((FP32 *)src, (unsigned long *)dst, dim);
+  }
+  else if (srctype == "string") {
+    char *start = nullptr, *ptr = nullptr;
+    char endch;
+
+    if ((start = strchr(src, '[')))
+      endch = ']';
+    else if ((start = strchr(src, '{')))
+      endch = '}';
+    else if ((start = strchr(src, '(')))
+      endch = ')';
+    else
+    {
+      start = src;
+      endch = '\0';
+    }
+    if (endch) start++;
+
+    ptr = start;
+
+    while (*ptr && *ptr != endch) {
+      while (*ptr && (*ptr == ' ' || *ptr == ',')) ptr++;
+      char *p1 = ptr;
+      while (*ptr != ' ' && *ptr != ',' && *ptr != endch) ptr++;
+      char buff[64];
+      
+      strncpy(buff,p1,(ptr-p1));
+      buff[(int)(ptr - p1)] = 0;
+
+      dst[retlen] = (unsigned char)(atoi(buff)); 
+    
+      retlen += sizeof(unsigned char);
+    } // while
+  } // else
+
+
+  unsigned int metadata = MYVECTOR_V1_BV_METADATA;
+  memcpy(&dst[retlen], &metadata, sizeof(metadata));
+  retlen += sizeof(metadata);
+ 
+  ha_checksum cksum = my_checksum(0, (const unsigned char *)dst, retlen);
+  memcpy(&dst[retlen], &cksum, sizeof(cksum));
+  retlen += sizeof(cksum);
+
+  *length = retlen;
+  return dst;
+}
+
+
 extern "C" bool myvector_construct_init(UDF_INIT *initid, UDF_ARGS *args, char *message) {
         initid->max_length = MYVECTOR_CONSTRUCT_MAX_LEN;
         initid->ptr = (char *)malloc(MYVECTOR_CONSTRUCT_MAX_LEN);
@@ -1281,11 +1515,51 @@ extern "C" bool myvector_construct_init(UDF_INIT *initid, UDF_ARGS *args, char *
 
 extern "C" char *myvector_construct(UDF_INIT *initid, UDF_ARGS *args, char *result,
                           unsigned long *length, unsigned char *is_null,
-                          unsigned char *) {
+                          unsigned char *error) {
   char *ptr = args->args[0];
+  char *opt = args->args[1];
   char *start = nullptr;
   char endch;
+  char *retvec = initid->ptr;
+  int  retlen  = 0;
+  bool skipConvert = false;
 
+  if (!opt || !args->lengths[1])
+    opt = "i=string,o=float"; // i=string,o=float
+  else {
+    MyVectorOptions vo(opt);
+
+    /*
+     * i = float, o = float : App already has the vector in floats, just
+                              need to add MyVector metadata and checksum
+     * i = bv,    o = bv    : App is sending bytes of a Binary Vector 
+                              (e.g Cohere model). Add metadata + checksum
+     * i = string, o = bv   : Convert series of 1-byte int's to  Binary
+                              Vector
+     * i = column, o = bv   : App wants to implement SQ compression. Convert
+                              MyVector float column to BV
+     */
+    if (vo.getOption("i") == "float" && vo.getOption("o") == "float") 
+      skipConvert = true;
+
+    /* For Binary Vectors, we will branch out to a separate routine */
+    if (vo.getOption("o") == "bv")
+      return myvector_construct_bv(vo.getOption("i"), ptr, initid->ptr,
+                                   args->lengths[0], length, is_null, error);
+  } // else opt
+
+  if (skipConvert) {
+    // User is passing floats directly in bind variable or using "0x" literal
+    if ((args->lengths[0] % sizeof(FP32)) != 0)
+      SET_UDF_ERROR_AND_RETURN("Input vector is malformed, length not a multiple of sizeof(float) %lu.", args->lengths[0]);
+    memcpy(retvec, ptr, args->lengths[0]);
+    retlen = args->lengths[0];
+    goto addChecksum;
+  }
+
+  /* Below code implements conversion from string "[0.134511 -0.082219 ...]" to
+   * floats followed by metadata & checksum.
+   */
   if ((start = strchr(ptr, '[')))
     endch = ']';
   else if ((start = strchr(ptr, '{')))
@@ -1300,8 +1574,6 @@ extern "C" char *myvector_construct(UDF_INIT *initid, UDF_ARGS *args, char *resu
   if (endch) start++;
 
   ptr = start;
-  char *retvec = initid->ptr;
-  int  retlen  = 0;
 
   while (*ptr && *ptr != endch) {
     while (*ptr && (*ptr == ' ' || *ptr == ',')) ptr++;
@@ -1316,6 +1588,8 @@ extern "C" char *myvector_construct(UDF_INIT *initid, UDF_ARGS *args, char *resu
     
     retlen += sizeof(FP32);
   } // while
+
+addChecksum:
   unsigned int metadata = MYVECTOR_V1_FP32_METADATA;
   memcpy(&retvec[retlen], &metadata, sizeof(metadata));
   retlen += sizeof(metadata);
@@ -1347,15 +1621,16 @@ extern "C" bool myvector_display_init(UDF_INIT *initid, UDF_ARGS *args, char *me
 extern "C" char *myvector_display(UDF_INIT *initid, UDF_ARGS *args, char *result,
                           unsigned long *length, char *is_null,
                           char *error) {
+  unsigned char *bvec = (unsigned char *)args->args[0];
   FP32 *fvec = (FP32 *)args->args[0];
-  if (!fvec || !args->lengths[0]) {
+  if (!bvec || !args->lengths[0]) {
     *is_null = 1;
     *error   = 1;
     return result;
   }
 
   /* We assume MySQL passes the VARBINARY value aligned correctly i.e aligned
-   * at 8 bytes. Need to verify that when supporting double, FP16 etc.
+   * at highest 8 bytes. Need to verify that when supporting double, FP16 etc.
    */
 
   int precision = 0;
@@ -1380,14 +1655,33 @@ extern "C" char *myvector_display(UDF_INIT *initid, UDF_ARGS *args, char *result
   }
 #endif
 
-  int    dims = MyVectorDimFromStorageLength(args->lengths[0]);
-  
+  int dim = 0;
+  unsigned int metadata = 0;
+  memcpy((char *)&metadata, &bvec[args->lengths[0] - MYVECTOR_COLUMN_EXTRA_LEN],
+         sizeof(metadata));
+
+  if (metadata == MYVECTOR_V1_FP32_METADATA) {
+    bvec = nullptr;
+    dim  = MyVectorDimFromStorageLength(args->lengths[0]);
+  }
+  else if (metadata == MYVECTOR_V1_BV_METADATA) {
+    fvec = nullptr;
+    dim  = MyVectorBVDimFromStorageLength(args->lengths[0]);
+    dim  = dim / 8; /* bit-packet */
+  }
+
   ostr << "[";
   ostr << setprecision(precision);
-  for (int i = 0 ; i < dims; i++) {
+  for (int i = 0 ; i < dim; i++) {
     if (i) ostr << " ";
-    ostr << *fvec;
-    fvec++;
+    if (fvec) {
+      ostr << *fvec;
+      fvec++;
+    }
+    else {
+      ostr << (unsigned int)*bvec;
+      bvec++;
+    }
   }
   ostr << "]";
 
@@ -1412,6 +1706,32 @@ extern "C" bool myvector_distance_init(UDF_INIT *, UDF_ARGS *args, char *message
     return true; // error
   }
   return false;
+}
+
+extern "C" bool myvector_construct_binaryvector_init(UDF_INIT *initid, UDF_ARGS *args, char *message) {
+  if (args->arg_count != 1) {
+    strcpy(message, "Incorrect arguments, usage : myvector_construct_binary_vector(vec_col_expr)");
+    return true; // error
+  }
+  initid->max_length = 1024;
+  initid->ptr = (char *)malloc(initid->max_length);
+  return false;
+}
+
+
+extern "C" bool myvector_hamming_distance_init(UDF_INIT *initid, UDF_ARGS *args, char *message) {
+  return false;
+}
+
+extern "C" double myvector_hamming_distance(UDF_INIT *, UDF_ARGS *args, char *is_null,
+                          char *) {
+  double dist = 0.0;
+  unsigned long *v1 = (unsigned long *)(args->args[0]);
+  unsigned long *v2 = (unsigned long *)(args->args[1]);
+
+  size_t dim = args->lengths[0] * 8;
+
+  return HammingDistanceFn(v1, v2, &dim);
 }
 
 extern "C" double myvector_distance(UDF_INIT *, UDF_ARGS *args, char *is_null,
@@ -1507,11 +1827,16 @@ extern "C" char* myvector_search_open_udf(
     AbstractVectorIndex *vi = g_indexes.get(vecid);
     if (!vi) {
       vi = g_indexes.open(vecid, details, action);
+      if (!vi) {
+        strcpy(result, "Failed to open index");
+        *length = strlen(result);
+        return result;
+      }
       existing = false;
     }
 
     string trackingColumn = "", threads = "";
-    int nthreads = 0;
+    int    nthreads = 0;
 
     MyVectorOptions vo(details);
     if (vo.getOption("track").length()) {
@@ -1559,7 +1884,7 @@ extern "C" char* myvector_search_open_udf(
           trackingColumn.c_str(), lastts, trackingColumn.c_str(), currentts);
       }
       vi->setUpdateTs(currentts);
-      if (nthreads) vi->startParallelBuild(nthreads);
+      if (nthreads >= 2) vi->startParallelBuild(nthreads);
     }
 
     if (strlen(whereClause))
