@@ -308,8 +308,8 @@ double computeCosineDistance(FP32 *v1, FP32 *v2, int dim)
 
   return (1 - dist);
 }
-
 float HammingDistanceFn(const void* __restrict pVect1, const void* __restrict pVect2, const void* __restrict qty_ptr) {
+
 
     size_t qty = *((size_t*)qty_ptr); // dimension of the vector
     float dist = 0;
@@ -1293,13 +1293,13 @@ bool myvector_query_rewrite(const string &query, string *rewritten_query) {
   /* quick top-level check and exit if no MYVECTOR* pattern found in query */
   if (!strstr(query.c_str(), "MYVECTOR")) return false;
 
-  const regex create_table("^CREATE\\s+TABLE",
+  static const regex create_table("^CREATE\\s+TABLE",
                                 regex::icase | regex::nosubs);
-  const regex altert_table("^ALTER\\s+TABLE",
+  static const regex altert_table("^ALTER\\s+TABLE",
                                 regex::icase | regex::nosubs);
-  const regex select_stmt("^SELECT\\s+",
+  static const regex select_stmt("^SELECT\\s+",
                                 regex::icase | regex::nosubs);
-  const regex explain_stmt("^EXPLAIN\\s+",
+  static const regex explain_stmt("^EXPLAIN\\s+",
                                 regex::icase | regex::nosubs);
   
 
@@ -1949,6 +1949,7 @@ extern "C" void myvector_search_add_row_udf_deinit(UDF_INIT *initid) {
 
     my_plugin_log_message(&gplugin, MY_INFORMATION_LEVEL, 
       "Saving index %s to disk completed", vi->getName().c_str());
+
   }
 
   return;
