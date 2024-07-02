@@ -21,7 +21,6 @@
    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
 */
 
-#include "hnswlib.h"
 
 #include <regex>
 #include <algorithm>
@@ -34,18 +33,29 @@
 #include <set>
 #include <mutex>
 #include <shared_mutex>
+#include <unordered_map>
 
 #include <unistd.h>
 
-#define debug_print(...) my_plugin_log_message(&gplugin, MY_INFORMATION_LEVEL, __VA_ARGS__)
-
-using namespace std;
-
-#include "plugin/myvector/myvector.h"
 #include "mysql.h" 
 #include "mysql/plugin.h"
 #include "mysql/udf_registration_types.h"
+#include "plugin/myvector/myvector.h"
 #include "mysql/service_my_plugin_log.h"
+
+extern MYSQL_PLUGIN gplugin;
+
+#define debug_print(...)   my_plugin_log_message(&gplugin, MY_INFORMATION_LEVEL, __VA_ARGS__)
+#define info_print(...)    my_plugin_log_message(&gplugin, MY_INFORMATION_LEVEL, __VA_ARGS__)
+#define error_print(...)   my_plugin_log_message(&gplugin, MY_ERROR_LEVEL, __VA_ARGS__)
+#define warning_print(...) my_plugin_log_message(&gplugin, MY_WARNING_LEVEL, __VA_ARGS__)
+
+using namespace std;
+
+#include "myvectorutils.h"
+#include "hnswlib.h"
+#include "hnswdisk.h"
+
 #include "my_checksum.h"
 
 #include <mysql/components/component_implementation.h>
@@ -70,27 +80,8 @@ extern my_service<SERVICE_TYPE(mysql_udf_metadata)> *h_udf_metadata_service;
 
 class AbstractVectorIndex;
 
-/* MyVector only supports INT/BIGINT key type. 2 options for users :-
+#include "myvector.h"
 
-   1. Create the table with a INT primary key.
-   OR
-   2. If INT variant primary key is not possible, user can add a
-      AUTO INCREMENT with UNIQUE index column.
-*/
-
-typedef size_t KeyTypeInteger;
-
-
-/* v1 uses 4-byte floats for representing vector dimensions.
-   Just by templatizing all references to FP32, MyVector can support
-   FP16, 8-bit SQ etc in v2 :-
-
-      Replace all references to FP32 with T.
-      Add template<class T> before the functions/classes.
- */
-typedef float       FP32;
-
-typedef void*       VectorPtr;
 
 /* Each serialized vector has 4 bytes of metadata.
  * Byte 1 - MyVector vector format version
@@ -145,15 +136,13 @@ static const unsigned int HNSW_PARALLEL_BUILD_UNIT_SIZE = 100000;
 /* Bit packing for Binary Vectors */
 static const unsigned int BITS_PER_BYTE                 = 8;
 
-extern MYSQL_PLUGIN gplugin;
 extern char *myvector_index_dir;
+extern long myvector_feature_level;
 
 char *latin1 = const_cast<char *>("latin1");
 
 const set<string> MYVECTOR_INDEX_TYPES{"KNN", "HNSW", "HNSW_BV"};
 
-/* A generic key-value map for options */
-typedef unordered_map<string, string> OptionsMap;
 
 inline bool isValidIndexType(string &indextype) {
   return (MYVECTOR_INDEX_TYPES.find(indextype) !=
@@ -180,85 +169,6 @@ inline int MyVectorBVDimFromStorageLength(int length)
   return (length - MYVECTOR_COLUMN_EXTRA_LEN) * BITS_PER_BYTE;
 }
 
-/* Trim leading & trailing spaces */
-inline string lrtrim(const string &str)
-{
- string ret =
-   regex_replace(str, regex("^ +| +$|( ) +"), "$1");
- 
- return ret;
-}
-
-/* Split a string at comma and return ordered list */
-inline void split(const string &str, vector<string> &out)
-{
-  static const regex re("[^,]+");
-
-  sregex_iterator current(str.begin(), str.end(), re);
-  sregex_iterator end;
-  while (current != end) {
-    string val = lrtrim((*current).str());
-    out.push_back(val);
-    current++;
-  }
-}
-
-/* Helper class to manage vector index options as k-v map.
- * e.g type=HNSW,dim=1536,size=1000000,M=64,ef=100
- */
-class MyVectorOptions {
-  private:
-    /* Returns true on success, false on format error */
-    bool parseKV(const char *line)
-    {
-      /* e.g options list-MYVECTOR(type=hnsw,dim=50,size=4000000,M=64,ef=100) */
-      const char *ptr1 = line;
-      if (strchr(line,'|')) { // start marker
-        ptr1 = strchr(line,'|');
-        ptr1++;
-      }
-      string          sline(ptr1);
-      vector<string>  listoptions;
-
-      split(sline, listoptions);
-
-      for (auto s : listoptions) {
-        size_t eq = s.find_first_of('=');
-        if (eq == string::npos) return false;
-
-        string k = s.substr(0, eq);
-        string v = s.substr(eq+1);
-
-        k = lrtrim(k);
-        v = lrtrim(v);
-
-        if (!k.length() || !v.length()) return false;
-
-        setOption(k, v);
-      }
-
-      return true;
-    } /* parseKV */
-
-  public:
-    MyVectorOptions(const string &options) {
-      m_valid = false;
-      if (parseKV(options.c_str())) m_valid = true;
-    }
-
-    bool        isValid() const { return m_valid; }
-    void        setOption(const string &name, const string &val)
-      { m_options[name] = val; }
-    string getOption(const string &name)
-      { string ret = "";
-        if (m_options.find(name) != m_options.end()) ret = m_options[name];
-        return ret;
-      }
-           
-  private:
-    OptionsMap m_options;
-    bool       m_valid;
-};
 
 /* Compute L2/Eucliean squared distance via optimized function from hnswlib */
 double computeL2Distance(FP32 *v1, FP32 *v2, int dim)
@@ -308,8 +218,10 @@ double computeCosineDistance(FP32 *v1, FP32 *v2, int dim)
 
   return (1 - dist);
 }
+static int fdebug = 0;
 float HammingDistanceFn(const void* __restrict pVect1, const void* __restrict pVect2, const void* __restrict qty_ptr) {
 
+    if (fdebug) debug_print("Entered Hamming Distance Fn %p %p.", pVect1, pVect2);
 
     size_t qty = *((size_t*)qty_ptr); // dimension of the vector
     float dist = 0;
@@ -370,80 +282,6 @@ class HammingBinaryVectorSpace : public hnswlib::SpaceInterface<float> {
     ~HammingBinaryVectorSpace() {}
 };
 
-/* Interface for various types of vector indexes. Initial design is based
- * on 2 index types - 1) KNN in-memory using vector<> and priority_queue<>
- * 2) HNSW in-memory with persistence from hnswlib.
- */
-class AbstractVectorIndex
-{
-  public:
-          virtual ~AbstractVectorIndex() {}
-
-          virtual string getName() = 0;
-
-          virtual string getType() = 0;
-
-          virtual int         getDimension()
-          { return 0; }
-
-          virtual bool        supportsIncrUpdates()
-          { return false; }
-
-          virtual bool        supportsPersist()
-          { return false; }
-
-          virtual bool        supportsConcurrentUpdates()
-          { return false; }
-
-          virtual bool        isReady()
-          { return false; }
-
-          virtual bool        isDirty()
-          { return false; }
-
-          virtual string  getStatus()
-          { return getName() + "<Status>"; }
-
-          virtual bool loadIndex(const string &path)  = 0;
-
-          virtual bool saveIndex(const string &path)  = 0;
-          
-          virtual bool dropIndex(const string& path)  = 0;
-
-          virtual bool initIndex()                    = 0;
-
-          virtual bool closeIndex()                   = 0;
-
-          /* searchVectorNN - search and return 'n' Nearest Neighbours */
-          virtual bool searchVectorNN(VectorPtr qvec, int dim,
-                          vector<KeyTypeInteger> &nnkeys,
-                          int n) = 0;
-
-          /* insertVectortor - insert a vector into the index */
-          virtual bool insertVector(VectorPtr vec, int dim, KeyTypeInteger id) = 0;
-
-          /* startParallelBuild - User has initiated parallel index build/rebuild */
-          virtual bool startParallelBuild(int nthreads) = 0;
-
-          /* setUpdateTs - timestamp when the last index build/refresh was started */
-          virtual void setUpdateTs(unsigned long ts) = 0;
-
-          /* getUpdateTs - get timestamp when the last index build/refresh was started */
-          virtual unsigned long getUpdateTs() = 0;
-
-          /* getRowCount - get number of vectors present in the index */
-          virtual unsigned long getRowCount() = 0;
-
-          void lockShared()      { m_mutex.lock_shared(); }
-          void lockExclusive()   { m_mutex.lock(); }
-
-          void unlockShared()    { m_mutex.unlock_shared(); }
-          void unlockExclusive() { m_mutex.unlock(); }
-
-          shared_mutex& mutex()  { return m_mutex; }
-  private:
-    mutable shared_mutex m_mutex;
-};
 
 /* KNNIndex - a vector index type that implements brute-force KNN search in
  * the MyVector plugin. This index type could possibly be faster than SQL
@@ -458,7 +296,9 @@ class KNNIndex : public AbstractVectorIndex
           ~KNNIndex() { }
 
           /* Next 3 are no-op in the KNN in-memory index */
-          bool saveIndex(const string &path);
+          bool saveIndex(const string &path, const string &option = "");
+          
+          bool saveIndexIncr(const string &path, const string &option = "");
           
           bool loadIndex(const string &path);
 
@@ -483,6 +323,9 @@ class KNNIndex : public AbstractVectorIndex
 
           bool        supportsConcurrentUpdates()
           { return false; }
+          
+          bool        supportsIncrRefresh()
+          { return true; }
 
           bool        isReady()
           { return true; }
@@ -490,15 +333,15 @@ class KNNIndex : public AbstractVectorIndex
           bool        isDirty()
           { return false; }
 
-          int getDimension() { return m_dim; }
+          int getDimension()                     { return m_dim; }
           
           bool startParallelBuild(int nthreads)  { return false; }
 
-          void setUpdateTs(unsigned long ts) { m_updateTs = ts; }
+          void setUpdateTs(unsigned long ts)     { m_updateTs = ts; }
 
-          unsigned long getUpdateTs()        { return m_updateTs; }
+          unsigned long getUpdateTs()            { return m_updateTs; }
           
-          unsigned long getRowCount()        { return m_n_rows; }
+          unsigned long getRowCount()            { return m_n_rows; }
 
   private:
           string          m_name;
@@ -558,17 +401,24 @@ bool KNNIndex::insertVector(VectorPtr vec, int dim, KeyTypeInteger id)
 {
   FP32 *fvec = static_cast<FP32 *>(vec);
   vector<FP32> row(fvec, fvec + dim);
-  m_vectors.push_back({row, id}); // simple, demo purpose index
+  m_vectors.push_back({row, id}); // simple index - multithread unsafe
 
   m_n_rows++;
   
   return true;
 }
 
-bool KNNIndex::saveIndex([[maybe_unused]]const string &path) {
+bool KNNIndex::saveIndex([[maybe_unused]]const string &path, const string &option) {
 
   my_plugin_log_message(&gplugin, MY_WARNING_LEVEL,
     "KNN Memory Index (%s) - Save Index to disk is no-op", m_name.c_str());
+
+  return true;
+}
+
+bool KNNIndex::saveIndexIncr(const string &path, const string &option) {
+  my_plugin_log_message(&gplugin, MY_WARNING_LEVEL,
+    "KNN Memory Index (%s) - Save Index Incr to disk is no-op", m_name.c_str());
 
   return true;
 }
@@ -608,8 +458,18 @@ class HNSWMemoryIndex : public AbstractVectorIndex
           HNSWMemoryIndex(const string &name, const string &options);
 
           ~HNSWMemoryIndex();
+          
+          bool        supportsIncrUpdates()
+          { return m_incrUpdates; }
+          bool        supportsIncrRefresh()
+          { return m_incrRefresh; }
 
-          bool saveIndex(const string &path);
+          bool        isDirty()
+          { return m_isDirty; }
+
+          bool saveIndex(const string &path, const string &option);
+          
+          bool saveIndexIncr(const string &path, const string &option);
 
           bool loadIndex(const string &path);
 
@@ -638,6 +498,19 @@ class HNSWMemoryIndex : public AbstractVectorIndex
           unsigned long getRowCount()         { return m_n_rows; }
           
           bool startParallelBuild(int nthreads);
+    
+          virtual hnswlib::SpaceInterface<float>* getSpace(size_t dim);
+
+          virtual void setAlgHnsw(hnswlib::SpaceInterface<float> *sp,
+                                  hnswlib::AlgorithmInterface<FP32> *ha);
+
+          int getEfConstruction() { return m_ef_construction; }
+          int getM() { return m_M; }
+          int getSize() { return m_size; }
+
+          void getLastUpdateCoordinates(string &binlogFile, size_t &binlogPos);
+          void setLastUpdateCoordinates(const string &binlogFile, const size_t &binlogPos);
+          void getCheckPointString(string &ckstr);
 
   private:
     string        m_name;
@@ -652,15 +525,18 @@ class HNSWMemoryIndex : public AbstractVectorIndex
     int         m_M;
     int         m_size;
           
-    hnswlib::HierarchicalNSW<FP32> *m_alg_hnsw = nullptr;
+    hnswlib::AlgorithmInterface<FP32> *m_alg_hnsw = nullptr;
     //hnswlib::L2Space* m_space = nullptr;
-     hnswlib::SpaceInterface<float>* m_space = nullptr;
+    hnswlib::SpaceInterface<float>* m_space = nullptr;
 
 
     atomic<unsigned long>    m_n_rows{0};
     atomic<unsigned long>    m_n_searches{0};
 
     bool                     m_isDirty;
+
+    bool                     m_incrUpdates;
+    bool                     m_incrRefresh;
 
     /* Temporary store for multi-threaded, parallel index build */
     vector<char>           m_batch;
@@ -670,9 +546,11 @@ class HNSWMemoryIndex : public AbstractVectorIndex
     bool                   flushBatchParallel();
     bool                   flushBatchSerial();
 
-    hnswlib::SpaceInterface<float>* getSpace(size_t dim);
 
     int                    m_threads;
+
+    string                 m_binlogFile;
+    size_t                 m_binlogPosition;
 
 };
 
@@ -686,6 +564,8 @@ HNSWMemoryIndex::HNSWMemoryIndex(const string &name, const string &options)
   m_ef_search         = m_ef_construction;
   m_M                 = atoi(m_optionsMap.getOption("M").c_str());
   m_type              = m_optionsMap.getOption("type"); // Supports HNSW and HNSW_BV
+  m_incrUpdates       = m_optionsMap.getOption("online") == "Y";
+  m_incrRefresh       = m_optionsMap.getOption("track").length() > 0;
 
   if (m_optionsMap.getOption("ef_search").length())
     m_ef_search = atoi(m_optionsMap.getOption("ef_search").c_str());
@@ -706,10 +586,13 @@ bool HNSWMemoryIndex::initIndex()
                m_size, m_ef_construction, m_ef_search, m_M);
   //m_space    = new hnswlib::L2Space(m_dim);
   m_space    = getSpace(m_dim);
-  m_alg_hnsw = new hnswlib::HierarchicalNSW<FP32>(m_space, m_size,
+
+  m_alg_hnsw = new hnswlib::HierarchicalDiskNSW<FP32>(m_space, m_size,
                      m_M, m_ef_construction);
 
-  m_alg_hnsw->setEf(m_ef_search);
+
+  //m_alg_hnsw->setEf(m_ef_search);
+  (dynamic_cast<hnswlib::HierarchicalDiskNSW<FP32>*>(m_alg_hnsw))->setEf(m_ef_search);
 
   m_n_rows = 0;
   m_n_searches = 0;
@@ -717,33 +600,72 @@ bool HNSWMemoryIndex::initIndex()
   return true;
 }
 
-bool HNSWMemoryIndex::saveIndex(const string &path)
+void HNSWMemoryIndex::getCheckPointString(string &ckstr)  {
+
+  stringstream ss;
+
+  if (supportsIncrUpdates()) {
+    string binlogFile;
+    size_t binlogPos = 0;
+
+    getLastUpdateCoordinates(binlogFile, binlogPos);
+    ss << "Checkpoint:binlog:" << binlogFile << ":" << binlogPos;
+  }
+  else {
+    ss << "Checkpoint:timestamp:" << getUpdateTs();
+  }
+  ckstr = ss.str();
+}
+  
+
+bool HNSWMemoryIndex::saveIndex(const string &path, const string &option)
 {
+#ifdef TODO
   if (!m_isDirty) {
     my_plugin_log_message(&gplugin, MY_WARNING_LEVEL, 
       "HNSW index %s is not updated, save not required", m_name.c_str());
     return true;
   }
+#endif
+
+  //lockExclusive();
 
   if (m_isParallelBuild) {
      flushBatchSerial(); // last batch, maybe small
   }
-  
-  string statusf = path + "/" + m_name + ".hnsw.index" + ".safe";
-  unlink(statusf.c_str());
+
+  debug_print("HNSWemoryIndex::saveIndex %s %s.", path.c_str(), option.c_str());
 
   string filename = path + "/" + m_name + ".hnsw.index";
- 
-  // hnswlib method for full write/rewrite. Expect 10GB to take 10 secs. 
-  m_alg_hnsw->saveIndex(filename);
 
-  ofstream sf(statusf, ios::out | ios::binary);
-  sf.write((char *)&m_updateTs, sizeof(m_updateTs));
-  sf.close();
+  string checkPointStr;
+  getCheckPointString(checkPointStr);
+
+  if (!m_alg_hnsw) {
+    error_print("HNSWMemoryIndex::saveIndex (%s) : null HNSW object.",
+                m_name.c_str());
+    return false;
+  }
+
+  hnswlib::HierarchicalDiskNSW<FP32> *alg_hnsw = 
+    dynamic_cast<hnswlib::HierarchicalDiskNSW<FP32>*>(m_alg_hnsw);
+  alg_hnsw->setCheckPointId(checkPointStr);
+
+  if (option == "build") {
+    // hnswlib method for full write/rewrite. Expect 10GB to take 10 secs. 
+    alg_hnsw->saveIndex(filename);
+  } else {
+    // "refresh" or "checkpoint" - special MyVector incremental persistence.
+    alg_hnsw->doCheckPoint(filename);
+  }
 
   m_isDirty = false;
   m_isParallelBuild = false;
 
+  return true;
+}
+
+bool HNSWMemoryIndex::saveIndexIncr(const string &path, const string &option) {
   return true;
 }
 
@@ -756,9 +678,7 @@ bool HNSWMemoryIndex::loadIndex(const string &path)
   m_space    = getSpace(m_dim);
   
   string indexfile = path + "/" + m_name + ".hnsw.index";
-  string statusf   = path + "/" + m_name + ".hnsw.index" + ".safe";
-  bool   readindex = false;
- 
+#ifdef DEADCODE 
   ifstream f(statusf, ios::in | ios :: binary);
   if (f.good()) {
     ifstream f2(indexfile);
@@ -784,23 +704,38 @@ bool HNSWMemoryIndex::loadIndex(const string &path)
       "Invalid last update timestamp %lu in %s.", lastupdatets, statusf.c_str());
     return false;
   }
+#endif
+  debug_print("Loading HNSW index %s from %s",
+              m_name.c_str(), indexfile.c_str());
 
-  debug_print("Loading HNSW index %s from %s, last update timestamp = %lu",
-              m_name.c_str(), indexfile.c_str(), lastupdatets);
 
   /* hnswlib throws std::runtime_error for errors */
   try {
-    m_alg_hnsw = new hnswlib::HierarchicalNSW<FP32>(m_space, indexfile);
+    m_alg_hnsw = new hnswlib::HierarchicalDiskNSW<FP32>(m_space, indexfile);
   } catch (std::runtime_error &e) {
     my_plugin_log_message(&gplugin, MY_ERROR_LEVEL, 
       "Error loading hnsw index (%s) from file : %s", m_name.c_str(), e.what());
     return false;
   }
+  string binlogFile;
+  size_t binlogPosition = 0;
+  size_t ts = 0;  
+ 
+  string ckid =  
+    dynamic_cast<hnswlib::HierarchicalDiskNSW<FP32>*>(m_alg_hnsw)->getCheckPointId();
 
-
-  m_alg_hnsw->setEf(m_ef_search);
-
-  setUpdateTs(lastupdatets); // in-memory
+  if (ckid.find("Checkpoint:timestamp") != string::npos) {
+    ts = atol(ckid.substr(ckid.rfind(":")+1).c_str());
+    debug_print("load index checkpoint ts = %lu.", ts);
+    setUpdateTs(ts);
+  }
+  else if (ckid.find("Checkpoint:binlog") != string::npos) {
+    size_t p1 = ckid.rfind(":");
+    binlogPosition = atol(ckid.substr(p1+1).c_str());
+    size_t p2 = ckid.rfind(":", p1 - 1);
+    binlogFile     = ckid.substr(p2, (p1-p2));
+    setLastUpdateCoordinates(binlogFile, binlogPosition);
+  }
 
   return true;
 }
@@ -810,8 +745,11 @@ bool HNSWMemoryIndex::dropIndex(const string &path)
   /* Force drop index - delete files and free memory */
   string indexfile = path + "/" + m_name + ".hnsw.index";
   unlink(indexfile.c_str());
-  
-  string statusfile = indexfile + ".safe";
+  string linksfile = path + "/" + m_name + ".hnsw.index.links";
+  unlink(linksfile.c_str());
+  string linksdatafile = path + "/" + m_name + ".hnsw.index.links.data";
+  unlink(linksdatafile.c_str());
+  string statusfile = path + "/" + m_name + ".hnsw.index.status";
   unlink(statusfile.c_str());
 
   if (m_alg_hnsw) delete m_alg_hnsw;
@@ -837,6 +775,8 @@ hnswlib::SpaceInterface<float>* HNSWMemoryIndex::getSpace(size_t dim) {
   return nullptr;
 }
 
+list<double> thr_distances;
+
 bool HNSWMemoryIndex::searchVectorNN(VectorPtr qvec, int dim,
                           vector<KeyTypeInteger> &keys,
                           int n) {
@@ -844,15 +784,34 @@ bool HNSWMemoryIndex::searchVectorNN(VectorPtr qvec, int dim,
   priority_queue<pair<FP32, hnswlib::labeltype>> result =
                   m_alg_hnsw->searchKnn(qvec, n);
 
+  if (n == 13) fdebug = 1; else fdebug = 0;
+
   keys.clear();
+  thr_distances.clear();
   while (!result.empty()) {
     keys.push_back(result.top().second);
+    thr_distances.push_back((double)(result.top().first));
+    fprintf(stderr, "NN distance = %11.5f\n", (double)(result.top().first));
     result.pop();
   }
 
   reverse(keys.begin(), keys.end()); // nearest to farthest
+  reverse(thr_distances.begin(), thr_distances.end());
   m_n_searches++;
   return true;
+}
+
+void HNSWMemoryIndex::getLastUpdateCoordinates(string &binlogFile,
+                                               size_t &binlogPosition) {
+  binlogFile     = m_binlogFile;
+  binlogPosition = m_binlogPosition;
+}
+
+void HNSWMemoryIndex::setLastUpdateCoordinates(const string &binlogFile,
+                                               const size_t &binlogPosition) {
+  m_binlogFile       = binlogFile;
+  m_binlogPosition   = binlogPosition;
+  debug_print("setLastUpdateCoordinates %s %lu", binlogFile.c_str(), binlogPosition);
 }
 
 
@@ -963,21 +922,88 @@ bool HNSWMemoryIndex::insertVector(VectorPtr vec, int dim, KeyTypeInteger id) {
   return true;
 }
 
-class VectorIndexCollection
+void HNSWMemoryIndex::setAlgHnsw(hnswlib::SpaceInterface<FP32> *sp,
+                                 hnswlib::AlgorithmInterface<FP32> *ha)
+{
+  if (m_alg_hnsw) delete m_alg_hnsw;
+  if (m_space)    delete m_space;
+
+  debug_print("in setAlgHnsw");
+
+  m_space    = sp;
+  m_alg_hnsw = ha;
+}
+
+#ifdef EXPERIMENTAL
+class HNSWMemoryDiskIndex : public HNSWMemoryIndex
 {
   public:
-    AbstractVectorIndex* open(const string& name,
-                              const string& options,
-                              const string& useraction);
+          HNSWMemoryDiskIndex(const string &name, const string &options);
 
-    AbstractVectorIndex* get(const string &name);
+          ~HNSWMemoryDiskIndex();
 
-    bool                 close(AbstractVectorIndex *hindex);
+          // virtual methods re-implemented
 
+          bool saveIndex(const string &path);
+
+          bool loadIndex(const string &path);
+
+          bool dropIndex(const string &path);
+
+          bool initIndex();
+
+          bool closeIndex();
   private:
-    unordered_map<string, AbstractVectorIndex*> m_indexes;
-    mutex m_mutex;
+    hnswlib::HierarchicalDiskNSW<FP32> *m_alg_hnswdisk;
 };
+
+HNSWMemoryDiskIndex::HNSWMemoryDiskIndex(const string &name,
+                                         const string &options)
+   : HNSWMemoryIndex(name, options)
+{
+}
+
+HNSWMemoryDiskIndex::~HNSWMemoryDiskIndex() {
+}
+
+bool HNSWMemoryDiskIndex::initIndex() {
+  // debug_print("hnsw disk initIndexO %p %s %d %d %d %d %d", this, m_name.c_str(), m_dim,
+  //             m_size, m_ef_construction, m_ef_search, m_M);
+  hnswlib::SpaceInterface<float> *tspace    = getSpace(getDimension());
+
+  m_alg_hnswdisk =
+    new hnswlib::HierarchicalDiskNSW<FP32>(tspace, getSize() , getM(), getEfConstruction());
+
+
+  // talghnsw->setEf(m_ef_search);
+
+  // m_n_rows = 0;
+  // m_n_searches = 0;
+
+  setAlgHnsw(tspace, m_alg_hnswdisk);
+
+  return true;
+}
+
+bool HNSWMemoryDiskIndex::saveIndex(const string &path) {
+  string filename = path + "/" + getName() + ".hnsw";
+  m_alg_hnswdisk->doCheckPoint(filename, "ckpt1live");
+}
+
+bool HNSWMemoryDiskIndex::loadIndex(const string &path) {
+   // perform recovery and load index
+   initIndex();
+}
+
+bool HNSWMemoryDiskIndex::dropIndex(const string &path) {
+  return true;
+}
+
+bool HNSWMemoryDiskIndex::closeIndex() {
+  return true;
+}
+#endif
+
 
 class SharedLockGuard {
   public:
@@ -990,7 +1016,7 @@ class SharedLockGuard {
 AbstractVectorIndex* VectorIndexCollection::open(const string &name,
                 const string &options, const string &useraction) {
 
-  lock_guard<mutex> l(m_mutex);
+  lock_guard<mutex> l(m_mutex); // exclusive
 
   debug_print("Opening new index %s %s %s", name.c_str(), options.c_str(), useraction.c_str());
 
@@ -1338,6 +1364,13 @@ extern "C" bool myvector_ann_set_init(UDF_INIT *initid, UDF_ARGS *args, char *me
            "myvector_ann_set('vec column', 'id column', searchvec [,nn=<n>]).");
     return true; // error
   }
+  char *col                 = args->args[0];
+  AbstractVectorIndex *vi = g_indexes.get(col);
+  if (!vi) {
+    sprintf(message, "Vector index (%s) not defined or not open for access.",
+            col);
+    return true; // error
+  }
 
   /* Users can possibly ask for 100s of neighbours. With buffer of 128000,
    * about 12800 PK ids can be filled in the return string
@@ -1517,7 +1550,10 @@ extern "C" char *myvector_construct(UDF_INIT *initid, UDF_ARGS *args, char *resu
                           unsigned long *length, unsigned char *is_null,
                           unsigned char *error) {
   char *ptr = args->args[0];
-  char *opt = args->args[1];
+  char *opt = nullptr;
+  if (args->arg_count == 2)
+    opt = args->args[1];
+
   char *start = nullptr;
   char endch;
   char *retvec = initid->ptr;
@@ -1669,6 +1705,10 @@ extern "C" char *myvector_display(UDF_INIT *initid, UDF_ARGS *args, char *result
     dim  = MyVectorBVDimFromStorageLength(args->lengths[0]);
     dim  = dim / 8; /* bit-packet */
   }
+  else { /* 'old' v0 vectors */
+    bvec = nullptr;
+    dim  = (args->lengths[0]) / sizeof(FP32);
+  }
 
   ostr << "[";
   ostr << setprecision(precision);
@@ -1794,24 +1834,17 @@ extern "C" bool myvector_search_open_udf_init(UDF_INIT *initid,
   return false;
 }
 
-extern "C" char* myvector_search_open_udf(
-                UDF_INIT *, UDF_ARGS *args, char *result,
-                unsigned long *length, unsigned char *is_null,
-                unsigned char *) {
-    char *vecid   =  args->args[0];
-    char *details =  args->args[1];
-    char *pkidcol =  args->args[2];
-    char *action  =  args->args[3];
-    char *extra   =  args->args[4];
+
+void BuildMyVectorIndexSQL(const char *db, const char *table, const char *idcol,
+                           const char *veccol, const char *action,
+                           const char *whereClause,
+                           AbstractVectorIndex *vi,
+                           char *errorbuf);
+
+void myvector_open_index_impl(char *vecid, char *details, char *pkidcol,
+              char *action, char *extra, char *whereClause, char *result)
+{
     bool existing =  true;
-    char whereClause[1024] = "";
-
-    my_plugin_log_message(&gplugin, MY_INFORMATION_LEVEL,
-      "myvector_search_open() params %s %s %s %s %s",
-      vecid, details, pkidcol, action, extra);
-
-    strcpy(result, "SUCCESS");
-
     /* Admin operations usecases :-
 
      1. Load rows into base table -> call myvector("build"). If VectorIndex is already
@@ -1829,8 +1862,7 @@ extern "C" char* myvector_search_open_udf(
       vi = g_indexes.open(vecid, details, action);
       if (!vi) {
         strcpy(result, "Failed to open index");
-        *length = strlen(result);
-        return result;
+        return;
       }
       existing = false;
     }
@@ -1856,6 +1888,7 @@ extern "C" char* myvector_search_open_udf(
       vi = nullptr;
     }
     else if (!strcmp(action, "load")) {
+      debug_print("Loading index %s.", vecid);
       vi->loadIndex(myvector_index_dir); // will handle 'reload' also
     }
     else if (!strcmp(action, "build")) {
@@ -1866,7 +1899,7 @@ extern "C" char* myvector_search_open_udf(
       unsigned long currentts  = time(NULL);
 
       if (trackingColumn.length()) {
-        snprintf(whereClause, sizeof(whereClause), " WHERE unix_timestamp(%s) <= %lu",
+        snprintf(whereClause, 1024, " WHERE unix_timestamp(%s) <= %lu",
                  trackingColumn.c_str(), currentts);
       }
       vi->setUpdateTs(currentts);
@@ -1879,7 +1912,7 @@ extern "C" char* myvector_search_open_udf(
 
       unsigned long currentts  = time(NULL);
       if (trackingColumn.length()) {
-        snprintf(whereClause, sizeof(whereClause),
+        snprintf(whereClause, 1024,
           " WHERE unix_timestamp(%s) > %lu AND unix_timestamp(%s) <= %lu",
           trackingColumn.c_str(), lastts, trackingColumn.c_str(), currentts);
       }
@@ -1887,14 +1920,88 @@ extern "C" char* myvector_search_open_udf(
       if (nthreads >= 2) vi->startParallelBuild(nthreads);
     }
 
+    if (!strcmp(action, "build") || !strcmp(action,"refresh")) {
+      char errorbuf[1024];
+      char *db, *table, *veccol;
+      db = vecid;
+      table = strchr(db, '.');
+      *table = 0;
+      table++; 
+      veccol = strchr(table, '.');
+      *veccol = 0;
+      veccol++;
+      BuildMyVectorIndexSQL(db, table, pkidcol, veccol, action, whereClause,
+                            vi, errorbuf);
+      strcpy(result, errorbuf);
+
+      vi->saveIndex(myvector_index_dir, action);
+    }
+    return;
+
+}
+
+extern "C" char* myvector_search_open_udf(
+                UDF_INIT *, UDF_ARGS *args, char *result,
+                unsigned long *length, unsigned char *is_null,
+                unsigned char *) {
+    char *vecid   =  args->args[0];
+    char *details =  args->args[1];
+    char *pkidcol =  args->args[2];
+    char *action  =  args->args[3];
+    char *extra   =  args->args[4];
+    char whereClause[1024] = "";
+
+    my_plugin_log_message(&gplugin, MY_INFORMATION_LEVEL,
+      "myvector_search_open() params %s %s %s %s %s",
+      vecid, details, pkidcol, action, extra);
+
+    strcpy(result, "SUCCESS");
+
+    myvector_open_index_impl(vecid, details, pkidcol, action, extra, whereClause, result);
+    
     if (strlen(whereClause))
       strcpy(result, whereClause);
 
     *length = strlen(result);
     return result;
+
 }
 
 extern "C" void myvector_search_open_udf_deinit() {}
+
+extern "C" bool myvector_search_save_udf_init(UDF_INIT *initid,
+                UDF_ARGS *args, char *message) {
+  if (args->arg_count != 5) {
+    strcpy(message, "Incorrect arguments to MyVector internal UDF.");
+    return true;
+  }
+  return false;
+}
+
+extern "C" char* myvector_search_save_udf(
+                UDF_INIT *, UDF_ARGS *args, char *result,
+                unsigned long *length, unsigned char *is_null,
+                unsigned char *) {
+    char *vecid   =  args->args[0];
+    char *details =  args->args[1];
+    char *pkidcol =  args->args[2];
+    char *action  =  args->args[3];
+    char *extra   =  args->args[4];
+  
+    if (!g_indexes.get(vecid)) {
+      my_plugin_log_message(&gplugin, MY_ERROR_LEVEL,
+              "Index %s is not opened for build/refresh.", vecid);
+      strcpy(result, "FAILED");
+      *length = 7;
+      return result;
+    }
+
+    AbstractVectorIndex *vi = g_indexes.get(vecid);
+    vi->saveIndex(myvector_index_dir, action);
+    return result;
+}
+
+extern "C" void myvector_search_save_udf_deinit() {}
 
 extern "C" bool myvector_search_add_row_udf_init(UDF_INIT *initid,
                 UDF_ARGS *args, char *message) {
@@ -1943,12 +2050,12 @@ extern "C" void myvector_search_add_row_udf_deinit(UDF_INIT *initid) {
 
   if (vi) {
     my_plugin_log_message(&gplugin, MY_INFORMATION_LEVEL, 
-      "Saving index %s to disk", vi->getName().c_str());
+      "Not Saving index %s to disk", vi->getName().c_str());
 
-    vi->saveIndex(myvector_index_dir);
+    // vi->saveIndex(myvector_index_dir);
 
     my_plugin_log_message(&gplugin, MY_INFORMATION_LEVEL, 
-      "Saving index %s to disk completed", vi->getName().c_str());
+      "Not Saving index %s to disk completed", vi->getName().c_str());
 
   }
 
@@ -2002,5 +2109,64 @@ extern "C" long long myvector_is_valid(
 
 extern "C" void myvector_is_valid_deinit(UDF_INIT *) { }
 
+extern "C" bool myvector_row_distance_init(UDF_INIT *initid, UDF_ARGS *args,
+                                       char *message) {
+  if (!initid || args->arg_count != 0) {
+    strcpy(message, "Incorrect arguments to myvector_row_distance(), "
+                    "Usage : myvector_row_distance()");
+    return true;
+  }
+  initid->const_item = 0;
+  return false;
+}
+extern "C" double myvector_row_distance(UDF_INIT *, UDF_ARGS *, char *,
+                          char *) {
+  double dist =  999999.99;
 
+  if (thr_distances.size()) {
+    dist = thr_distances.front();
+    thr_distances.pop_front();
+  }
+
+  return dist;
+}
+extern "C" void myvector_row_distance_deinit(UDF_INIT *) { }
+
+bool isAfter(const string &binlogfile2, const size_t binlogpos2,
+             const string &binlogfile1, const size_t binlogpos1) {
+  return ((binlogfile2 == binlogfile1 && binlogpos2 > binlogpos1) ||
+          (binlogfile2 > binlogfile1));
+          
+}
+
+void myvector_table_op(const string &dbname, const string &tbname, unsigned int pkid,
+                       vector<unsigned char> &vec,
+                       const string &binlogfile, const size_t &binlogpos) {
+   string vecid = dbname + "." + tbname + "." + "wvec";
+   AbstractVectorIndex *vi = g_indexes.get(vecid);
+   if (vi) {
+     string binlogfileold;
+     size_t binlogposold;
+     vi->getLastUpdateCoordinates(binlogfileold, binlogposold);
+     if (isAfter(binlogfile, binlogpos,  binlogfileold, binlogposold)) {
+       vi->insertVector(vec.data(), vi->getDimension(), pkid);
+       //vi->setLastUpdateCoordinates(binlogfile, binlogpos);
+     } else {
+       debug_print("Skipping index update (%s %lu) < (%s %lu).",
+                   binlogfile.c_str(), binlogpos, binlogfileold.c_str(), binlogposold);
+     }
+   }
+}
+
+void myvector_checkpoint_index(const string &dbtable, const string &veccol,
+                               const string &binlogFile, size_t binlogPos) {
+  string vecid = dbtable + "." + veccol;
+  AbstractVectorIndex *vi = g_indexes.get(vecid);
+  if (vi) {
+    debug_print("Checkpoint index %s at (%s %lu)\n", vecid.c_str(),
+                binlogFile.c_str(), binlogPos);
+    vi->setLastUpdateCoordinates(binlogFile, binlogPos);
+    vi->saveIndex(myvector_index_dir, "checkpoint");
+  }
+}
 /* end of myvector.cc */

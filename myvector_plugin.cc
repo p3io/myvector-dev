@@ -50,6 +50,9 @@ my_service<SERVICE_TYPE(mysql_udf_metadata)> *h_udf_metadata_service = nullptr;
 
 MYSQL_PLUGIN gplugin;
 
+void myvector_binlog_loop(int id);
+
+
 static int plugin_init(MYSQL_PLUGIN plugin_info) {
   gplugin = plugin_info;
 
@@ -57,7 +60,7 @@ static int plugin_init(MYSQL_PLUGIN plugin_info) {
   h_udf_metadata_service  = new my_service<SERVICE_TYPE(mysql_udf_metadata)>(
                                   "mysql_udf_metadata", h_registry);
 
-  //std::thread *binlog_thread = new std::thread(myvector_binlog_loop, 5);
+  std::thread *binlog_thread = new std::thread(myvector_binlog_loop, 5);
   return 0; /* success */
 }
 

@@ -1,0 +1,668 @@
+
+#include <fcntl.h>
+#include <inttypes.h>
+#include <signal.h>
+#include <stdarg.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <time.h>
+#include <algorithm>
+#include <map>
+#include <vector>
+#include <sstream>
+#include <utility>
+#include <regex>
+#include <condition_variable>
+
+// #include <boost/lockfree/queue.hpp>
+
+#include "caching_sha2_passwordopt-vars.h"
+#include "client/client_priv.h"
+#include "compression.h"
+#include "libbinlogevents/include/codecs/factory.h"
+#include "libbinlogevents/include/compression/factory.h"
+#include "libbinlogevents/include/compression/payload_event_buffer_istream.h"
+#include "libbinlogevents/include/trx_boundary_parser.h"
+#include "my_byteorder.h"
+#include "my_dbug.h"
+#include "my_default.h"
+#include "my_dir.h"
+#include "my_io.h"
+#include "my_macros.h"
+#include "my_time.h"
+#include "prealloced_array.h"
+#include "print_version.h"
+#include "scope_guard.h"
+#include "sql/binlog_reader.h"
+#include "sql/log_event.h"
+#include "sql/my_decimal.h"
+#include "sql/rpl_constants.h"
+#include "sql/rpl_gtid.h"
+#include "sql_common.h"
+#include "sql_string.h"
+#include "sslopt-vars.h"
+#include "typelib.h"
+#include <unistd.h>
+
+#include "myvector.h"
+using namespace std;
+#include "myvectorutils.h"
+
+Format_description_event glob_description_event(BINLOG_VERSION, server_version);
+
+void myvector_table_op(const string &dbname, const string &tbname,
+                       unsigned int pkid, vector<unsigned char> &vec,
+                       const string &binlogfile, const size_t &pos);
+
+typedef struct
+{
+  string                dbName_;
+  string                tableName_;
+  vector<unsigned char> vec_;
+  unsigned int          veclen_; // bytes
+  unsigned int          pkid_;
+  string                binlogFile_;
+  size_t                binlogPos_;
+} VectorIndexUpdateItem;
+
+typedef struct
+{
+  string                vectorColumn;
+  int                   idColumnPosition;
+  int                   vecColumnPosition;
+} VectorIndexColumnInfo;
+
+// boost::lockfree::queue<VectorIndexUpdateItem*> gqueue(128); /* FUTURE */
+
+/* Simple Queue class for single producer-multiple consumer pattern. This
+ * implementation currently uses std::mutex & std::cv. Rework later to use
+ * boost::lockfree::queue<> if scalability issues hit.
+ */
+class EventsQ {
+  public:
+    void enqueue(VectorIndexUpdateItem *item) {
+      lock_guard lk(m_);
+      items_.push_back(item);
+      cv_.notify_one();
+    }
+    VectorIndexUpdateItem *dequeue() {
+      std::unique_lock lk(m_);
+      cv_.wait(lk, []{ return items_.size(); });
+      
+      VectorIndexUpdateItem *next = items_.front();
+      items_.pop_front();
+      return next; // consumer to call delete
+    }
+  private:
+    mutex              m_;
+    condition_variable cv_;
+    static list<VectorIndexUpdateItem*> items_;
+};
+
+list<VectorIndexUpdateItem*> EventsQ::items_;
+EventsQ gqueue_;
+
+// map from db.table to <col1,col2,...>. Usually table will have a single
+// vector column. But MyVector supports multiple vector index in 1 table.
+mutex binlog_stream_mutex_;
+map<string, VectorIndexColumnInfo> g_OnlineVectorIndexes;
+string currentBinlogFile = "";
+size_t currentBinlogPos  = 0;
+
+#define EVENT_HEADER_LENGTH 19
+
+typedef struct {
+  unsigned long   tableId;
+  std::string     dbName;
+  std::string     tableName;
+  unsigned int    nColumns;
+  vector<char>    columnTypes;
+  vector<int>     columnMetadata;
+} TableMapEvent;
+
+/* parseTableMapEvent - Parse the TableMap binlog event that appears before
+ * any *ROWS* event.
+ */
+void parseTableMapEvent(unsigned char *event_buf, unsigned int event_len,
+                        TableMapEvent &tev)
+{
+  tev = TableMapEvent();
+  
+  int index = EVENT_HEADER_LENGTH;
+
+  memcpy(&tev.tableId, &event_buf[index], 6);
+  index += 6;
+
+  index += 2; // flags
+
+  int dbNameLen = (int)event_buf[index]; // single byte
+  index++;
+  tev.dbName = std::string((const char *)&event_buf[index], dbNameLen);
+  
+  index += (dbNameLen + 1); // null
+  int tbNameLen = (int)event_buf[index]; // single byte
+  index++;
+  tev.tableName = std::string((const char *)&event_buf[index], tbNameLen);
+  index += (tbNameLen + 1);
+
+  // TODO Check if db.table has a registered vector index and early bailout.
+
+  tev.nColumns = (unsigned int)event_buf[index]; // TODO - we support only <= 255 columns
+  index++;
+  
+  tev.columnTypes.insert(tev.columnTypes.end(), &event_buf[index],
+                         &event_buf[index + tev.nColumns]);
+  index += tev.nColumns;
+  unsigned int metadatalen = (unsigned int)event_buf[index];
+  index++;
+  
+  for (unsigned int i = 0; i < (unsigned int)tev.nColumns; i++) {
+    unsigned int md = 0;
+    switch(tev.columnTypes[i]) {
+      case MYSQL_TYPE_FLOAT:
+      case MYSQL_TYPE_DOUBLE:
+      case MYSQL_TYPE_BLOB:
+      case MYSQL_TYPE_JSON:
+      case MYSQL_TYPE_GEOMETRY:
+          md = (unsigned int)event_buf[index]; index++;
+          break;
+      case MYSQL_TYPE_BIT:
+      case MYSQL_TYPE_VARCHAR:
+      case MYSQL_TYPE_NEWDECIMAL:
+          memcpy(&md, &event_buf[index], 2); index+=2;
+          break;
+      case MYSQL_TYPE_SET:
+      case MYSQL_TYPE_ENUM:
+      case MYSQL_TYPE_STRING:
+          memcpy(&md, &event_buf[index], 2); index+=2;
+          break;
+      case MYSQL_TYPE_TIME2:
+      case MYSQL_TYPE_DATETIME2:
+      case MYSQL_TYPE_TIMESTAMP2:
+          md = (unsigned int)event_buf[index]; index++;
+          break;
+      default:
+          md = 0;
+     } // switch
+     tev.columnMetadata.push_back(md);
+   } // for
+   return;
+}
+
+void parseRowsEvent(unsigned char *event_buf, unsigned int event_len,
+                    TableMapEvent &tev, unsigned int pos1, unsigned int pos2,
+                    vector<VectorIndexUpdateItem *> &updates)
+{
+  int index = EVENT_HEADER_LENGTH;
+
+  unsigned long tableId = 0;
+
+  event_len -= 4; // checksum at the end.
+
+  updates.clear();
+
+  
+  memcpy(&tableId, &event_buf[index], 6);
+  index+=6;
+  index+=2;
+
+  unsigned int extrainfo = 0;
+  memcpy(&extrainfo, &event_buf[index], 2);
+  index += extrainfo;
+  
+  unsigned int ncols = (unsigned int)event_buf[index];
+  index++;
+  unsigned int inclen = (((unsigned int)(ncols) + 7) >> 3);
+  // TODO : Assuming included & null bitmaps are single byte
+  unsigned int incbitmap = (unsigned int)event_buf[index];
+  index++;
+  while (true) {
+  unsigned int nullbitmap = (unsigned int)event_buf[index];
+  index++;
+
+  unsigned int  lval = 0;
+  unsigned long llval = 0;
+
+  unsigned int idVal = 0, vecsz = 0;
+  unsigned char *vec = nullptr;
+  for (int i = 0; i  < ncols; i++) {
+    switch (tev.columnTypes[i]) {
+      case MYSQL_TYPE_LONG:
+               memcpy(&lval, &event_buf[index], 4); index+=4;
+               if (i == pos1) idVal = lval;
+               break;
+      case MYSQL_TYPE_LONGLONG:
+               memcpy(&llval, &event_buf[index], 8); index+=8;
+               break;
+      case MYSQL_TYPE_VARCHAR: {
+               unsigned int clen = 0;
+               if (tev.columnMetadata[i] < 256) {
+                  clen = (unsigned int)event_buf[index];index++; 
+               }
+               else {
+                  memcpy(&clen, &event_buf[index], 2); index+=2;
+               }
+               if (i == pos2) { // found vector column
+                 vec = &event_buf[index];
+                 vecsz = clen;
+               }
+               index += clen;
+               break;
+               }
+      case MYSQL_TYPE_TIMESTAMP2:
+               index+=4;
+               break;
+      default:
+              fprintf(stderr, "unrecognized column type %d\n", (int)tev.columnTypes[i]);
+    } // switch
+    fprintf(stderr, "parseRowsEvent - index now is %d.\n", index);
+  } // for columns
+
+  VectorIndexUpdateItem *item = new VectorIndexUpdateItem();
+  item->dbName_    = tev.dbName;
+  item->tableName_ = tev.tableName;
+  item->vec_.assign(vec, vec + vecsz);
+  item->pkid_       = idVal;
+  item->binlogFile_ = currentBinlogFile;
+  item->binlogPos_  = currentBinlogPos;
+  updates.push_back(item);
+  fprintf(stderr, "parseRowsEvent event len = %u, consumed = %d, id = %u\n", event_len, index, idVal);
+  //index += 4;
+  if (index >= event_len) break; // done - multi rows
+  else fprintf(stderr, "fetching more rows\n");
+
+  } // while (true) - single row or multi-row event!
+  return;
+}
+
+/* parseRotateEvent() : binlog ROTATE event indicates end of current binlog
+ * file and start of new binlog file. The offs parameter is to handle quirks
+ * in the first ROTATE event.
+ */
+void parseRotateEvent(unsigned char *event_buf, unsigned int event_len,
+                      string &binlogfile, size_t &binlogpos, bool offs) {
+  fprintf(stderr, "Rotate Event Length = %u\n", event_len);
+  int index = EVENT_HEADER_LENGTH;
+  size_t position = 0;
+
+  memcpy(&position, &event_buf[index], sizeof(position));
+  binlogpos = position;
+  
+  index += sizeof(position);
+
+  string filename = string((const char *)&event_buf[index], (event_len - index)-(4*offs));
+  binlogfile = filename;
+
+}
+
+/* GetBaseTableColumnPositions() - Get the column ordinal positions of the
+ * "id" column and the "vector" column. e.g :-
+ * CREATE TABLE books
+ * (
+ *   bookid   int   primary key,
+ *   title    varchar(512),
+ *   author   varchar(200),
+ *   bvector  MYVECTOR(dim=1024,....)
+ * );
+ * This function will return "1" and "4" idcolpos & veccolpos resp.
+ * The ordinal positions are needed to parse the binlog row events. The 
+ * positions are got from the information_schema.columns dictionary table.
+ */
+void GetBaseTableColumnPositions(MYSQL *hnd, const char *db, const char *table,
+                                 const  char *idcol, const char *veccol,
+                                 int &idcolpos, int &veccolpos) {
+  static const char *q = "select column_name, ordinal_position from "
+                         "information_schema.columns where table_schema='%s' "
+                         "and table_name='%s' and "
+                         "(column_name='%s' or column_name='%s');";
+  char buff[MYVECTOR_BUFF_SIZE];
+
+  idcolpos = veccolpos = 0;
+
+  snprintf(buff, sizeof(buff), q, db, table, idcol, veccol);
+
+  if (mysql_real_query(hnd, buff, strlen(buff))) {
+    //TODO
+  }
+
+  MYSQL_RES *result = mysql_store_result(hnd);
+  if (!result) {
+    //TODO
+  }
+
+  if (mysql_num_fields(result) != 2) {
+    //TODO
+  }
+
+  MYSQL_ROW row;
+  while ((row = mysql_fetch_row(result)))
+  {
+    unsigned long *lengths = mysql_fetch_lengths(result);
+    if (!lengths[0] || !lengths[1] || !row[0] || !row[1]) {
+      //TODO
+    }
+
+    char *colname  = row[0];
+    char *position = row[1];
+
+    if (!strcmp(colname, idcol))
+      idcolpos = atoi(position);
+    if (!strcmp(colname, veccol))
+      veccolpos = atoi(position);
+  } // while
+
+  mysql_free_result(result);
+
+  fprintf(stderr, "GetBaseColumn %s %s = %d %d\n", idcol, veccol, idcolpos, veccolpos);
+
+  return;
+}
+
+void myvector_open_index_impl(char *vecid, char *details, char *pkidcol,
+             char *action, char *extra, char *whereClause, char *result);
+
+
+/* OpenAllOnlineVectorIndexes() - Query MYVECTOR_COLUMNS view and open/load
+ * all vector indexes that have online=Y i.e updated online when DMLs are
+ * done on the base table. This routine is called during plugin init.
+ */
+void OpenAllOnlineVectorIndexes(MYSQL *hnd) {
+  static const char *q = "select db,tbl,col,info from test.myvector_columns";
+  
+  if (mysql_real_query(hnd, q, strlen(q))) {
+    //TODO
+    return;
+  }
+
+  MYSQL_RES *result = mysql_store_result(hnd);
+  if (!result) {
+    //TODO
+    return;
+  }
+
+  MYSQL_ROW row;
+  while ((row = mysql_fetch_row(result)))
+  {
+    unsigned long *lengths;
+    lengths = mysql_fetch_lengths(result);
+
+    char *dbname = row[0];
+    char *tbl    = row[1];
+    char *col    = row[2];
+    char *info   = row[3];
+    
+    if (!lengths[0] || !lengths[1] || !lengths[2] || !lengths[3] ||
+        !dbname || !tbl || !col || !info) {
+      //TODO
+      continue;
+    }
+
+    fprintf(stderr, "Got index %s %s %s [%s]\n", dbname,tbl,col,info);
+
+    MyVectorOptions vo(info);
+
+    if (!vo.isValid()) {
+      //TODO
+      continue;
+    }
+
+    string online = vo.getOption("online");
+    string idcol  = vo.getOption("idcol");
+
+    int idcolpos  = 0, veccolpos = 0;
+    GetBaseTableColumnPositions(hnd, dbname, tbl, idcol.c_str(), col,
+                                idcolpos, veccolpos);
+    if (idcolpos == 0 || veccolpos == 0)
+      continue;
+
+    if (online == "y" || online == "Y") {
+      char empty[1024];
+      char action[] = "load";
+      char vecid[1024];
+      sprintf(vecid,"%s.%s.%s", dbname, tbl, col);
+      myvector_open_index_impl(vecid, info, empty, action, empty, empty, empty);
+
+      sprintf(vecid, "%s.%s", dbname, tbl);
+      VectorIndexColumnInfo vc{col, idcolpos, veccolpos};
+      g_OnlineVectorIndexes[vecid] = vc;
+    }
+  } // while
+
+  mysql_free_result(result);
+}
+
+/* BuildMyVectorIndexSQL - Build/Refresh the Vector Index! This function uses
+ * SQL to fetch rows from the base table and put the ID & vector into the
+ * vector index.
+ */
+void BuildMyVectorIndexSQL(const char *db, const char *table, const char *idcol,
+                           const char *veccol, const char *action,
+                           const char *whereClause,
+                           AbstractVectorIndex *vi,
+                           char *errorbuf) {
+
+  strcpy(errorbuf, "SUCCESS");
+  size_t nRows = 0;
+
+  fprintf(stderr, "BuildMyVectorIndexSQL %s %s %s %s %s %s.\n",
+          db, table, idcol, veccol,  action, whereClause);
+
+  MYSQL mysql;
+
+  /* Use a new connection for vector index */
+  mysql_init(&mysql);
+
+  if (!mysql_real_connect(&mysql, "localhost",  "root", NULL, NULL, 0, "/tmp/mysql.sock", 0))
+  {
+    snprintf(errorbuf, MYVECTOR_BUFF_SIZE, "Error in new connection to build vector index : %s.",
+             mysql_error(&mysql));
+    return;
+  }
+
+  char query[MYVECTOR_BUFF_SIZE];
+
+  sprintf(query, "LOCK TABLES %s.%s READ", db, table); // No DMLs during build.
+
+  if (mysql_real_query(&mysql, query, strlen(query))) {
+    //TODO
+    return;
+  }
+
+  sprintf(query, "SELECT %s, %s FROM %s.%s", idcol, veccol, db, table);
+
+  if (whereClause && strlen(whereClause))
+    strcat(query, whereClause);
+
+  if (mysql_real_query(&mysql, query, strlen(query))) {
+    //TODO
+  }
+
+  MYSQL_RES *result = mysql_store_result(&mysql);
+
+  MYSQL_ROW row;
+
+  while ((row = mysql_fetch_row(result)))
+  {
+    unsigned long *lengths;
+    lengths = mysql_fetch_lengths(result);
+
+
+    char *idval = row[0];
+    char *vec   = row[1];
+    
+    if (!lengths[0] || !lengths[1] || !idval) {
+      //TODO
+    }
+
+    vi->insertVector(vec, 40, atol(idval));
+    nRows++;
+  }
+
+  mysql_free_result(result);
+
+  // Get binlog coordinates, set checkpoint id and flush
+
+  {
+
+    lock_guard<mutex> binlogMutex(binlog_stream_mutex_);
+
+    vi->setLastUpdateCoordinates(currentBinlogFile, currentBinlogPos);
+
+    snprintf(errorbuf, MYVECTOR_BUFF_SIZE, "SUCCESS: Index created & saved at (%s %lu)"
+             ", rows : %lu.", currentBinlogFile.c_str(), currentBinlogPos, nRows);
+
+    vi->saveIndex("/mysqldata","build");
+
+    string key = string(db) + "." + string(table);
+
+    if (vi->supportsIncrUpdates()) {
+      int idcolpos = 0, veccolpos = 0;
+      GetBaseTableColumnPositions(&mysql, db, table, idcol, veccol,
+                                idcolpos, veccolpos);
+      VectorIndexColumnInfo vc{veccol, idcolpos, veccolpos};
+      g_OnlineVectorIndexes[key] = vc;
+    }
+  
+    sprintf(query, "UNLOCK TABLES");
+
+    int ret = 0;
+    if ((ret = mysql_real_query(&mysql, query, strlen(query)))) {
+      snprintf(errorbuf, MYVECTOR_BUFF_SIZE, "Error in unlocking table (%d) %s.",
+               ret, mysql_error(&mysql));
+    } 
+  
+  } // scope guard for binlog mutex lock
+
+exitFn:
+  mysql_close(&mysql);
+ 
+}
+
+void myvector_checkpoint_index(const string &dbtable, const string &veccol,
+                               const string &binlogFile, size_t binlogPos);
+
+/* FlushOnlineVectorIndexes - flush or checkpoint all vector indexes that
+ * registered for online binlog based DML updates. This routine is currently
+ * called on every binlog file rotation. Binlog global mutex should be held
+ * by caller so that current binlog filename and position are locked.
+ */
+void FlushOnlineVectorIndexes() {
+  for (auto vi : g_OnlineVectorIndexes) {
+      myvector_checkpoint_index(vi.first, vi.second.vectorColumn, currentBinlogFile,
+                                currentBinlogPos);
+  }
+}
+
+void myvector_binlog_loop(int id) {
+  MYSQL mysql;
+  
+  int ret;
+
+  sleep(30);
+
+  mysql_init(&mysql);
+
+
+  if (!mysql_real_connect(&mysql, "localhost",  "root", NULL, NULL, 0, "/tmp/mysql.sock", 0))
+  {
+     fprintf(stderr, "real connect failed %s\n", mysql_error(&mysql));
+     return;
+  }
+
+  
+
+  std::string initQuery =                "SET @master_binlog_checksum = 'NONE', @source_binlog_checksum = 'NONE',@net_read_timeout = 3000, @replica_net_timeout = 3000;";
+  ret = mysql_real_query(&mysql,
+                initQuery.c_str() , initQuery.length()); 
+  printf("mysql_query ret = %d\n", ret);
+
+  // BinlogPos bp = getMinimumBinlogReadPosition();
+
+  OpenAllOnlineVectorIndexes(&mysql);
+
+  MYSQL_RPL rpl;
+  memset(&rpl, 0, sizeof(rpl));
+  rpl.file_name = NULL;
+  rpl.start_position = 4;
+  rpl.server_id=1;
+  ret = mysql_binlog_open(&mysql, &rpl);
+
+  int cnt = 0;
+
+  void vector_q_thread_fn(int id);
+  for (int i = 0; i < 4; i++)
+    std::thread *worker_thread = new std::thread(vector_q_thread_fn, i);
+
+  size_t nrows = 0;
+
+  TableMapEvent tev;
+  while (!mysql_binlog_fetch(&mysql,&rpl)) { 
+
+     Log_event_type type = (Log_event_type)rpl.buffer[1 + EVENT_TYPE_OFFSET];
+     fprintf(stderr, "binlog event len = %lu, type = %d\n", rpl.size, (int)type);
+     //fprintf(stderr, "binlog file coordinates %s %u\n", rpl.start_position);
+     //if (cnt == 1000 || !rpl.size) break;
+     Log_event *ev = nullptr;
+     unsigned long event_len = rpl.size - 1;
+     unsigned char *event_buf = nullptr;
+     if (!(event_buf = (unsigned char *)malloc(event_len + 1))) {
+        break;
+     }
+     memcpy(event_buf, rpl.buffer + 1, event_len);
+
+
+
+     fprintf(stderr, "\nEvent found of type %d, length = %lu\n",(int)type, event_len);
+     if (type == 4) {
+       if (currentBinlogFile.length()) {
+         FlushOnlineVectorIndexes();
+       }
+       parseRotateEvent(event_buf, event_len, currentBinlogFile, currentBinlogPos, (currentBinlogFile.length() > 0));
+       continue;
+     }
+     fprintf(stderr, "binlog position : %s %lu (%lu)\n",
+             currentBinlogFile.c_str(), currentBinlogPos, currentBinlogPos + event_len);
+     currentBinlogPos += event_len;
+     if (g_OnlineVectorIndexes.size() == 0) continue; // optimization!
+     if (type == 19) {
+       parseTableMapEvent(event_buf, event_len, tev);
+     }
+     if (type == 30) {
+       string key = tev.dbName + "." + tev.tableName;
+       if (g_OnlineVectorIndexes.find(key) == g_OnlineVectorIndexes.end()) {
+         continue;
+       }
+       int idcolpos  = g_OnlineVectorIndexes[key].idColumnPosition;
+       int veccolpos = g_OnlineVectorIndexes[key].vecColumnPosition;
+       vector<unsigned char> v;
+       unsigned int vsz = 0;
+       unsigned int pkid = 0;
+       if (1 || tev.tableName == "testv") {
+         vector<VectorIndexUpdateItem *> updates;
+         parseRowsEvent(event_buf, event_len, tev, idcolpos - 1, veccolpos - 1, updates);
+         nrows += updates.size();
+         fprintf(stderr, "parseRowsEvent returned %u rows,  total = %lu\n", updates.size(), nrows);
+         for (auto item : updates) {
+           gqueue_.enqueue(item);
+         }
+       }
+     }
+     cnt++;
+  } // while (binlog_fetch)
+  fprintf(stderr, "Exiting binlog func\n");
+} // myvector_binlog_loop()
+
+void vector_q_thread_fn(int id)
+{
+  VectorIndexUpdateItem *item = nullptr;
+
+  fprintf(stderr, "vector_q thread started %d\n", id);
+
+  while (1) {
+       item = gqueue_.dequeue();
+       myvector_table_op(item->dbName_, item->tableName_, item->pkid_, item->vec_,
+                         item->binlogFile_, item->binlogPos_);
+       delete item;
+  }
+
+}
