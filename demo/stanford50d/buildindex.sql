@@ -4,4 +4,4 @@
 -- This demo uses the 50 dimension word vectors from above dataset.
 
 -- Replace database name 'test' if required, uncomment and run
--- call myvector_search_admin('test.words50d.wordvec','wordid','build','');
+-- call myvector_index_build('test.words50d.wordvec','wordid','build','');
