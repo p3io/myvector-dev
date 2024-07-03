@@ -123,7 +123,7 @@ typedef struct {
 /* parseTableMapEvent - Parse the TableMap binlog event that appears before
  * any *ROWS* event.
  */
-void parseTableMapEvent(unsigned char *event_buf, unsigned int event_len,
+void parseTableMapEvent(const unsigned char *event_buf, unsigned int event_len,
                         TableMapEvent &tev)
 {
   tev = TableMapEvent();
@@ -189,7 +189,7 @@ void parseTableMapEvent(unsigned char *event_buf, unsigned int event_len,
    return;
 }
 
-void parseRowsEvent(unsigned char *event_buf, unsigned int event_len,
+void parseRowsEvent(const unsigned char *event_buf, unsigned int event_len,
                     TableMapEvent &tev, unsigned int pos1, unsigned int pos2,
                     vector<VectorIndexUpdateItem *> &updates)
 {
@@ -224,7 +224,7 @@ void parseRowsEvent(unsigned char *event_buf, unsigned int event_len,
   unsigned long llval = 0;
 
   unsigned int idVal = 0, vecsz = 0;
-  unsigned char *vec = nullptr;
+  const unsigned char *vec = nullptr;
   for (int i = 0; i  < ncols; i++) {
     switch (tev.columnTypes[i]) {
       case MYSQL_TYPE_LONG:
@@ -279,7 +279,7 @@ void parseRowsEvent(unsigned char *event_buf, unsigned int event_len,
  * file and start of new binlog file. The offs parameter is to handle quirks
  * in the first ROTATE event.
  */
-void parseRotateEvent(unsigned char *event_buf, unsigned int event_len,
+void parseRotateEvent(const unsigned char *event_buf, unsigned int event_len,
                       string &binlogfile, size_t &binlogpos, bool offs) {
   fprintf(stderr, "Rotate Event Length = %u\n", event_len);
   int index = EVENT_HEADER_LENGTH;
@@ -598,22 +598,13 @@ void myvector_binlog_loop(int id) {
   TableMapEvent tev;
   while (!mysql_binlog_fetch(&mysql,&rpl)) { 
 
-     Log_event_type type = (Log_event_type)rpl.buffer[1 + EVENT_TYPE_OFFSET];
-     fprintf(stderr, "binlog event len = %lu, type = %d\n", rpl.size, (int)type);
-     //fprintf(stderr, "binlog file coordinates %s %u\n", rpl.start_position);
-     //if (cnt == 1000 || !rpl.size) break;
-     Log_event *ev = nullptr;
-     unsigned long event_len = rpl.size - 1;
-     unsigned char *event_buf = nullptr;
-     if (!(event_buf = (unsigned char *)malloc(event_len + 1))) {
-        break;
-     }
-     memcpy(event_buf, rpl.buffer + 1, event_len);
-
-
+     Log_event_type type      = (Log_event_type)rpl.buffer[1 + EVENT_TYPE_OFFSET];
+     unsigned long event_len  = rpl.size - 1;
+     const unsigned char *event_buf = rpl.buffer + 1;
 
      fprintf(stderr, "\nEvent found of type %d, length = %lu\n",(int)type, event_len);
-     if (type == 4) {
+
+     if (type == binary_log::ROTATE_EVENT) {
        if (currentBinlogFile.length()) {
          FlushOnlineVectorIndexes();
        }
@@ -624,10 +615,10 @@ void myvector_binlog_loop(int id) {
              currentBinlogFile.c_str(), currentBinlogPos, currentBinlogPos + event_len);
      currentBinlogPos += event_len;
      if (g_OnlineVectorIndexes.size() == 0) continue; // optimization!
-     if (type == 19) {
+     if (type == binary_log::TABLE_MAP_EVENT) {
        parseTableMapEvent(event_buf, event_len, tev);
      }
-     if (type == 30) {
+     else if (type == binary_log::WRITE_ROWS_EVENT) {
        string key = tev.dbName + "." + tev.tableName;
        if (g_OnlineVectorIndexes.find(key) == g_OnlineVectorIndexes.end()) {
          continue;
