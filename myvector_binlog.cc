@@ -634,17 +634,12 @@ void myvector_binlog_loop(int id) {
        }
        int idcolpos  = g_OnlineVectorIndexes[key].idColumnPosition;
        int veccolpos = g_OnlineVectorIndexes[key].vecColumnPosition;
-       vector<unsigned char> v;
-       unsigned int vsz = 0;
-       unsigned int pkid = 0;
-       if (1 || tev.tableName == "testv") {
-         vector<VectorIndexUpdateItem *> updates;
-         parseRowsEvent(event_buf, event_len, tev, idcolpos - 1, veccolpos - 1, updates);
-         nrows += updates.size();
-         fprintf(stderr, "parseRowsEvent returned %u rows,  total = %lu\n", updates.size(), nrows);
-         for (auto item : updates) {
-           gqueue_.enqueue(item);
-         }
+       vector<VectorIndexUpdateItem *> updates;
+       parseRowsEvent(event_buf, event_len, tev, idcolpos - 1, veccolpos - 1, updates);
+       nrows += updates.size();
+       fprintf(stderr, "parseRowsEvent returned %u rows,  total = %lu\n", updates.size(), nrows);
+       for (auto item : updates) {
+         gqueue_.enqueue(item);
        }
      }
      cnt++;
