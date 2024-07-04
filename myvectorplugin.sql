@@ -41,6 +41,7 @@ ORDER BY db,tbl,col;
 DROP FUNCTION IF EXISTS myvector_construct;
 DROP FUNCTION IF EXISTS myvector_display;
 DROP FUNCTION IF EXISTS myvector_distance;
+DROP FUNCTION IF EXISTS myvector_row_distance;
 DROP FUNCTION IF EXISTS myvector_ann_set;
 DROP FUNCTION IF EXISTS myvector_is_valid;
 
@@ -68,6 +69,11 @@ CREATE FUNCTION myvector_ann_set  RETURNS STRING  SONAME 'myvector.so';
 -- Return : 1 if vector is valid with respect to dimension & checksum, 0 otherwise
 -- This function is critical to detect vector column tampering or malformed vectors.
 CREATE FUNCTION myvector_is_valid RETURNS INTEGER  SONAME 'myvector.so';
+
+-- myvector_row_distance(pkid INT)
+-- Return : Distance of the select approximate near neighbour to the query vector
+-- This function is used in the SELECT list when a MYVECTOR_IS_ANN query is run
+CREATE FUNCTION myvector_row_distance  RETURNS REAL   SONAME 'myvector.so';
 
 -- myvector_search_open_udf() - internal function, not for direct use
 CREATE FUNCTION myvector_search_open_udf RETURNS STRING  SONAME 'myvector.so';

@@ -775,7 +775,7 @@ hnswlib::SpaceInterface<float>* HNSWMemoryIndex::getSpace(size_t dim) {
   return nullptr;
 }
 
-list<double> thr_distances;
+thread_local unordered_map<KeyTypeInteger, double> *tls_distances = nullptr;
 
 bool HNSWMemoryIndex::searchVectorNN(VectorPtr qvec, int dim,
                           vector<KeyTypeInteger> &keys,
@@ -787,16 +787,14 @@ bool HNSWMemoryIndex::searchVectorNN(VectorPtr qvec, int dim,
   if (n == 13) fdebug = 1; else fdebug = 0;
 
   keys.clear();
-  thr_distances.clear();
+  tls_distances->clear();
   while (!result.empty()) {
     keys.push_back(result.top().second);
-    thr_distances.push_back((double)(result.top().first));
-    fprintf(stderr, "NN distance = %11.5f\n", (double)(result.top().first));
+    (*tls_distances)[result.top().second] = result.top().first;
     result.pop();
   }
 
   reverse(keys.begin(), keys.end()); // nearest to farthest
-  reverse(thr_distances.begin(), thr_distances.end());
   m_n_searches++;
   return true;
 }
@@ -1378,11 +1376,15 @@ extern "C" bool myvector_ann_set_init(UDF_INIT *initid, UDF_ARGS *args, char *me
   initid->max_length = MYVECTOR_DISPLAY_MAX_LEN;
   initid->ptr        = (char *)malloc(initid->max_length);
   (*h_udf_metadata_service)->result_set(initid, "charset", latin1);
+
+  tls_distances = new unordered_map<KeyTypeInteger, double>();
   return false;
 }
 
 extern "C" void myvector_ann_set_deinit(UDF_INIT *initid) {
   if (initid && initid->ptr) free(initid->ptr);
+  delete tls_distances;
+  tls_distances = nullptr;
 }
 
 extern "C" char* myvector_ann_set(UDF_INIT *initid, UDF_ARGS *args, char *result,
@@ -2111,21 +2113,24 @@ extern "C" void myvector_is_valid_deinit(UDF_INIT *) { }
 
 extern "C" bool myvector_row_distance_init(UDF_INIT *initid, UDF_ARGS *args,
                                        char *message) {
-  if (!initid || args->arg_count != 0) {
+  if (!initid || args->arg_count != 1) {
     strcpy(message, "Incorrect arguments to myvector_row_distance(), "
-                    "Usage : myvector_row_distance()");
+                    "Usage : myvector_row_distance(idval)");
     return true;
   }
   initid->const_item = 0;
+  fprintf(stderr, "myvector_row_distance decimals = %d\n", initid->decimals);
+  initid->decimals = 31;
   return false;
 }
-extern "C" double myvector_row_distance(UDF_INIT *, UDF_ARGS *, char *,
+extern "C" double myvector_row_distance(UDF_INIT *, UDF_ARGS *args, char *,
                           char *) {
   double dist =  999999.99;
+  KeyTypeInteger idval= *((KeyTypeInteger *) args->args[0]);
 
-  if (thr_distances.size()) {
-    dist = thr_distances.front();
-    thr_distances.pop_front();
+  if (tls_distances->size()) {
+    if (tls_distances->find(idval) != tls_distances->end())
+      dist = (*tls_distances)[idval];
   }
 
   return dist;
