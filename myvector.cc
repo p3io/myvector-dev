@@ -2144,10 +2144,11 @@ bool isAfter(const string &binlogfile2, const size_t binlogpos2,
           
 }
 
-void myvector_table_op(const string &dbname, const string &tbname, unsigned int pkid,
+void myvector_table_op(const string &dbname, const string &tbname, 
+                       const string &cname, unsigned int pkid,
                        vector<unsigned char> &vec,
                        const string &binlogfile, const size_t &binlogpos) {
-   string vecid = dbname + "." + tbname + "." + "wvec";
+   string vecid = dbname + "." + tbname + "." + cname;
    AbstractVectorIndex *vi = g_indexes.get(vecid);
    if (vi) {
      string binlogfileold;

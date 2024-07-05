@@ -50,7 +50,7 @@ using namespace std;
 
 Format_description_event glob_description_event(BINLOG_VERSION, server_version);
 
-void myvector_table_op(const string &dbname, const string &tbname,
+void myvector_table_op(const string &dbname, const string &tbname, const string &cname,
                        unsigned int pkid, vector<unsigned char> &vec,
                        const string &binlogfile, const size_t &pos);
 
@@ -58,6 +58,7 @@ typedef struct
 {
   string                dbName_;
   string                tableName_;
+  string                columnName_;
   vector<unsigned char> vec_;
   unsigned int          veclen_; // bytes
   unsigned int          pkid_;
@@ -92,6 +93,9 @@ class EventsQ {
       VectorIndexUpdateItem *next = items_.front();
       items_.pop_front();
       return next; // consumer to call delete
+    }
+    bool empty() const {
+      return items_.size() == 0;
     }
   private:
     mutex              m_;
@@ -145,7 +149,9 @@ void parseTableMapEvent(const unsigned char *event_buf, unsigned int event_len,
   tev.tableName = std::string((const char *)&event_buf[index], tbNameLen);
   index += (tbNameLen + 1);
 
-  // TODO Check if db.table has a registered vector index and early bailout.
+  string key = tev.dbName + "." + tev.tableName;
+  if (g_OnlineVectorIndexes.find(key) == g_OnlineVectorIndexes.end())
+    return; // we don't need to parse rest of the metadata
 
   tev.nColumns = (unsigned int)event_buf[index]; // TODO - we support only <= 255 columns
   index++;
@@ -259,8 +265,11 @@ void parseRowsEvent(const unsigned char *event_buf, unsigned int event_len,
   } // for columns
 
   VectorIndexUpdateItem *item = new VectorIndexUpdateItem();
+  string key = tev.dbName + "." + tev.tableName;
+  string columnName = g_OnlineVectorIndexes[key].vectorColumn;
   item->dbName_    = tev.dbName;
   item->tableName_ = tev.tableName;
+  item->columnName_ = columnName;
   item->vec_.assign(vec, vec + vecsz);
   item->pkid_       = idVal;
   item->binlogFile_ = currentBinlogFile;
@@ -547,6 +556,13 @@ void myvector_checkpoint_index(const string &dbtable, const string &veccol,
  * by caller so that current binlog filename and position are locked.
  */
 void FlushOnlineVectorIndexes() {
+  /* first wait for the binlog event Q to drain out */
+  while (1) {
+    if (gqueue_.empty()) {
+      break;
+    }
+    usleep(500*1000); // 1/2 second
+  }
   for (auto vi : g_OnlineVectorIndexes) {
       myvector_checkpoint_index(vi.first, vi.second.vectorColumn, currentBinlogFile,
                                 currentBinlogPos);
@@ -646,7 +662,8 @@ void vector_q_thread_fn(int id)
 
   while (1) {
        item = gqueue_.dequeue();
-       myvector_table_op(item->dbName_, item->tableName_, item->pkid_, item->vec_,
+       myvector_table_op(item->dbName_, item->tableName_, item->columnName_,
+                         item->pkid_, item->vec_,
                          item->binlogFile_, item->binlogPos_);
        delete item;
   }

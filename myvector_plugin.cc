@@ -121,7 +121,7 @@ mysql_declare_plugin(myvector){
     MYSQL_AUDIT_PLUGIN,           /* plugin type             */
     &myvector_descriptor,         /* type specific descriptor*/
     "myvector",                   /* plugin name             */
-    PLUGIN_AUTHOR_ORACLE,         /* author                  */
+    "myvector/p3io",              /* author                  */
     "Vector Storage & Search Plugin for MySQL",/* description*/
     PLUGIN_LICENSE_GPL,           /* license                 */
     plugin_init,                  /* plugin initializer      */
