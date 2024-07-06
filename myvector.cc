@@ -590,12 +590,13 @@ bool HNSWMemoryIndex::initIndex()
   m_alg_hnsw = new hnswlib::HierarchicalDiskNSW<FP32>(m_space, m_size,
                      m_M, m_ef_construction);
 
-
-  //m_alg_hnsw->setEf(m_ef_search);
   (dynamic_cast<hnswlib::HierarchicalDiskNSW<FP32>*>(m_alg_hnsw))->setEf(m_ef_search);
 
   m_n_rows = 0;
   m_n_searches = 0;
+
+  setLastUpdateCoordinates("zzzzzz.bin", 99999999999);
+  setUpdateTs(0);
 
   return true;
 }
@@ -674,69 +675,54 @@ bool HNSWMemoryIndex::loadIndex(const string &path)
   if (m_alg_hnsw) delete m_alg_hnsw;
   if (m_space)    delete m_space;
 
-  //m_space =  new hnswlib::L2Space(m_dim);
+  m_alg_hnsw = nullptr;
+  m_space    = nullptr;
+
   m_space    = getSpace(m_dim);
   
   string indexfile = path + "/" + m_name + ".hnsw.index";
-#ifdef DEADCODE 
-  ifstream f(statusf, ios::in | ios :: binary);
-  if (f.good()) {
-    ifstream f2(indexfile);
-    if (f2.good())
-      readindex = true;
-    else
-      my_plugin_log_message(&gplugin, MY_ERROR_LEVEL, 
-        "Index file %s not found.", indexfile.c_str());
-  }
-  else {
-    my_plugin_log_message(&gplugin, MY_ERROR_LEVEL, 
-      "Index status file %s not found.", statusf.c_str());
-  }
-  if (!readindex) {
-    return false;
-  }
-
-  unsigned long lastupdatets = 0;
-  f.read((char *)&lastupdatets, sizeof(lastupdatets));
-
-  if (lastupdatets < MYVECTOR_MIN_VALID_UPDATE_TS) {
-    my_plugin_log_message(&gplugin, MY_ERROR_LEVEL, 
-      "Invalid last update timestamp %lu in %s.", lastupdatets, statusf.c_str());
-    return false;
-  }
-#endif
+  
   debug_print("Loading HNSW index %s from %s",
               m_name.c_str(), indexfile.c_str());
 
-
   /* hnswlib throws std::runtime_error for errors */
+  m_alg_hnsw = nullptr;
   try {
     m_alg_hnsw = new hnswlib::HierarchicalDiskNSW<FP32>(m_space, indexfile);
   } catch (std::runtime_error &e) {
-    my_plugin_log_message(&gplugin, MY_ERROR_LEVEL, 
-      "Error loading hnsw index (%s) from file : %s", m_name.c_str(), e.what());
-    return false;
+      warning_print("Error loading hnsw index (%s) from file : %s",
+                    m_name.c_str(), e.what());
   }
-  string binlogFile;
-  size_t binlogPosition = 0;
-  size_t ts = 0;  
+
+  if (!m_alg_hnsw) { /* no disk files found */
+    initIndex();
+  }
+  else {
+    string binlogFile;
+    size_t binlogPosition = 0;
+    size_t ts = 0;  
  
-  string ckid =  
-    dynamic_cast<hnswlib::HierarchicalDiskNSW<FP32>*>(m_alg_hnsw)->getCheckPointId();
+    string ckid =  
+      dynamic_cast<hnswlib::HierarchicalDiskNSW<FP32>*>(m_alg_hnsw)->getCheckPointId();
 
-  if (ckid.find("Checkpoint:timestamp") != string::npos) {
-    ts = atol(ckid.substr(ckid.rfind(":")+1).c_str());
-    debug_print("load index checkpoint ts = %lu.", ts);
-    setUpdateTs(ts);
-  }
-  else if (ckid.find("Checkpoint:binlog") != string::npos) {
-    size_t p1 = ckid.rfind(":");
-    binlogPosition = atol(ckid.substr(p1+1).c_str());
-    size_t p2 = ckid.rfind(":", p1 - 1);
-    binlogFile     = ckid.substr(p2, (p1-p2));
-    setLastUpdateCoordinates(binlogFile, binlogPosition);
+    if (ckid.find("Checkpoint:timestamp") != string::npos) {
+      ts = atol(ckid.substr(ckid.rfind(":")+1).c_str());
+      debug_print("load index checkpoint ts = %lu.", ts);
+      setUpdateTs(ts);
+    }
+    else if (ckid.find("Checkpoint:binlog") != string::npos) {
+      size_t p1 = ckid.rfind(":");
+      binlogPosition = atol(ckid.substr(p1+1).c_str());
+      size_t p2 = ckid.rfind(":", p1 - 1);
+      binlogFile     = ckid.substr(p2, (p1-p2));
+      setLastUpdateCoordinates(binlogFile, binlogPosition);
+    }
+
   }
 
+  debug_print("debug HNSW index %s from %s",
+              m_name.c_str(), indexfile.c_str());
+  dynamic_cast<hnswlib::HierarchicalDiskNSW<FP32>*>(m_alg_hnsw)->debug();
   return true;
 }
 
