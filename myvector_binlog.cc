@@ -461,7 +461,7 @@ void BuildMyVectorIndexSQL(const char *db, const char *table, const char *idcol,
   /* Use a new connection for vector index */
   mysql_init(&mysql);
 
-  if (!mysql_real_connect(&mysql, "localhost",  "root", NULL, NULL, 0, "/tmp/mysql.sock", 0))
+  if (!mysql_real_connect(&mysql, "localhost",  "root", NULL, NULL, 0, "/tmp/mysql.sock", CLIENT_IGNORE_SIGPIPE))
   {
     snprintf(errorbuf, MYVECTOR_BUFF_SIZE, "Error in new connection to build vector index : %s.",
              mysql_error(&mysql));
@@ -574,15 +574,18 @@ void myvector_binlog_loop(int id) {
   
   int ret;
 
-  sleep(30);
+  /* wait till mysql is open to access */
+  while (1) {
 
-  mysql_init(&mysql);
+    mysql_init(&mysql);
 
-
-  if (!mysql_real_connect(&mysql, "localhost",  "root", NULL, NULL, 0, "/tmp/mysql.sock", 0))
-  {
-     fprintf(stderr, "real connect failed %s\n", mysql_error(&mysql));
-     return;
+    if (!mysql_real_connect(&mysql, "localhost",  "root", NULL, NULL, 0, "/tmp/mysql.sock", 0))
+    {
+       fprintf(stderr, "real connect failed %s\n", mysql_error(&mysql));
+       sleep(1);
+       continue;
+    }
+    break;
   }
 
   
@@ -606,7 +609,7 @@ void myvector_binlog_loop(int id) {
   int cnt = 0;
 
   void vector_q_thread_fn(int id);
-  for (int i = 0; i < 4; i++)
+  for (int i = 0; i < myvector_index_bg_threads; i++)
     std::thread *worker_thread = new std::thread(vector_q_thread_fn, i);
 
   size_t nrows = 0;

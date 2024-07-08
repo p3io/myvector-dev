@@ -157,4 +157,6 @@ class VectorIndexCollection
 
 #define MYVECTOR_BUFF_SIZE       1024
 
+extern long myvector_index_bg_threads;
+
 #endif  // PLUGIN_MYVECTOR_H

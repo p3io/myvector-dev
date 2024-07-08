@@ -1866,6 +1866,9 @@ void myvector_open_index_impl(char *vecid, char *details, char *pkidcol,
        threads  = vo.getOption("threads");
        nthreads = atoi(threads.c_str());
     }
+    else {
+        nthreads = myvector_index_bg_threads;
+    }
 
     if (!strcmp(action, "save")) {
       vi->saveIndex(myvector_index_dir);

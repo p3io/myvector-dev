@@ -424,7 +424,7 @@
     WriteCheckPointStatus(hnswFileName, CKPT_BEGIN_INCR_PASS2);
 
     // Step 2 - Write to real hnsw index file now
-    int hnswFile = Open(hnswFileName.c_str(), O_RDWR);
+    int hnswFile = Open(hnswFileName.c_str(), O_RDWR | O_CREAT, 0600);
 
     saveIndexHeader(hnswFile);
 
@@ -462,8 +462,8 @@
     std::string linksLocation = hnswFileName + ".links";
     std::string linksDataLocation = hnswFileName + ".links.data";
     
-    int linksDirOutput  = Open(linksLocation.c_str(), O_RDWR);
-    int linksDataOutput = Open(linksDataLocation.c_str(), O_RDWR);
+    int linksDirOutput  = Open(linksLocation.c_str(), O_RDWR | O_CREAT, 0600);
+    int linksDataOutput = Open(linksDataLocation.c_str(), O_RDWR | O_CREAT, 0600);
 
     for (auto nodeId : mx_nodeLinksLevelGt0Updates) {
         unsigned int linkListSize =
@@ -732,6 +732,15 @@
         read(hnswFile, &M_, sizeof(M_));
         read(hnswFile, &mult_, sizeof(mult_));
         read(hnswFile, &ef_construction_, sizeof(ef_construction_));
+    }
+
+    void debug() {
+      size_t c = cur_element_count;
+      debug_print("MaxElements = %lu, CurElements = %lu, SizePerElement = %lu"
+                  "maxLevel = %lu, maxM = %lu, maxM0_ = %lu, M_  = %lu.",
+                  max_elements_, c, size_data_per_element_,
+                  maxlevel_, maxM_, maxM0_, M_);
+      debug_print("CheckPointId = %s.", m_checkPointId.c_str());
     }
 
     std::string getCheckPointId() const {

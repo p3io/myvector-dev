@@ -66,11 +66,17 @@ static int plugin_init(MYSQL_PLUGIN plugin_info) {
 
 /* Config variables of the MyVector plugin */
 long myvector_feature_level;
+long myvector_index_bg_threads;
 char *myvector_index_dir;
 
 static MYSQL_SYSVAR_LONG(
     feature_level, myvector_feature_level, PLUGIN_VAR_RQCMDARG,
     "MyVector Feature Level.",
+    nullptr, nullptr, 2L, 1L, 100L, 0);
+
+static MYSQL_SYSVAR_LONG(
+    index_bg_threads, myvector_index_bg_threads, PLUGIN_VAR_RQCMDARG,
+    "MyVector Index Background Threads.",
     nullptr, nullptr, 2L, 1L, 100L, 0);
 
 static MYSQL_SYSVAR_STR(
@@ -80,7 +86,7 @@ static MYSQL_SYSVAR_STR(
     nullptr, nullptr, "/mysqldata");
 
 static SYS_VAR *myvector_system_variables[] = {
-    MYSQL_SYSVAR(feature_level), MYSQL_SYSVAR(index_dir)};
+    MYSQL_SYSVAR(feature_level), MYSQL_SYSVAR(index_bg_threads), MYSQL_SYSVAR(index_dir)};
 
 static int myvector_sql_preparse(MYSQL_THD, mysql_event_class_t event_class,
                        const void *event) {
