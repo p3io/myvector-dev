@@ -68,8 +68,10 @@
      * We distinguish between :-
      * Full Node flush - New or Updated node, where vector also needs to be
      * flushed to disk.
-     * Node Links flush - Only the links (or edges list) has to tbe flushed
+     * Node Links Level0 flush - Only the links (or edges list) has to tbe flushed
      * to disk (because the node's links got updated due to another vector insert).
+     * Node Links Level > 0 flush - A very low number of nodes will have level1,
+     * level2, level3 ... links updated.
      */
     void addNodeToFlushList(tableint id) 
       {
@@ -104,10 +106,11 @@
           m_nodeLinksLevelGt0Updates[index].insert(id);
       }
 
+    /* clearFlushList() - clear the "dirty" nodes lists after a checkpoint.*/
     void clearFlushList()
       {
-        //std::unique_lock <std::mutex> locklist(m_flushListMutex);
         for (int i = 0; i < FLUSH_LIST_PARTS; i++) {
+          std::unique_lock <std::mutex> locklist(m_flushListMutex[i]);
           m_nodeUpdates[i].clear();
           m_nodeLinksLevel0Updates[i].clear();
           m_nodeLinksLevelGt0Updates[i].clear();
@@ -136,6 +139,10 @@
       Close(ckptf, statusFileName);
     }
 
+    /* MoveBackCheckPointStatus() - Replace an incompleted checkpoint record
+     * with the earlier consistent checkpoint record. This routine is called
+     * at end of successful recovery.
+     */
     void MoveBackCheckPointStatus(const std::string &hnswFile) {
       std::string statusFileName = hnswFile + ".status";
       char buf1[256], buf2[256];
@@ -166,6 +173,7 @@
 
       if (cs1 == CKPT_CONSISTENT || cs2 != CKPT_CONSISTENT) {
         // TODO
+        throw std::runtime_error("Internal error #1 in MoveBackCheckPointStatus.");
       }
 
       setCheckPointId(ckptid2);
@@ -228,13 +236,16 @@
       if (cs == CKPT_BEGIN_INCR_PASS2) {
         warning_print("Flush of HNSW index %s was interrupted, crash "
                       "recovery is required.", hnswFile.c_str());
+        setCheckPointId(ckptid);
         doRecovery(hnswFile);
         consistent = true;
       }
 
       if (cs == CKPT_END_INCR_PASS2 || cs == CKPT_END_FULL_WRITE) {
-        warning_print("Flush of HNSW index %s completed, recovery "
+        warning_print("Flush of HNSW index %s had completed, recovery "
                       "not required.", hnswFile.c_str());
+        setCheckPointId(ckptid);
+        setCheckPointComplete(hnswFile);
         consistent = true;
       }
 
@@ -764,15 +775,11 @@
     void saveIndex(const std::string &hnswFileName) {
         WriteCheckPointStatus(hnswFileName, CKPT_BEGIN_FULL_WRITE);
         int hnswFile = Open(hnswFileName.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0600);
-        if (hnswFile == -1) {
-          // TODO
-        }
 
-        int rc = 0;
-        
         saveIndexHeader(hnswFile);
 
-        // This write() could do GBs of data write.
+        // This write() could do GBs of data write. All vectors & all level0
+        // links are written to disk by this single Write() call.
         write(hnswFile, data_level0_memory_, cur_element_count * size_data_per_element_);
 
         Fsync(hnswFile, hnswFileName);
