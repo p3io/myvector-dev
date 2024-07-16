@@ -1,4 +1,3 @@
-/*  Copyright (c) 2024 - p3io.in / shiyer22@gmail.com */
 /*
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -248,7 +247,6 @@ float HammingDistanceFn(const void* __restrict pVect1, const void* __restrict pV
     }
 
     dist = ldist;
-    // debug_print("hamming distance return  = %lu", ldist);
     return dist;
 }
 
@@ -711,10 +709,11 @@ bool HNSWMemoryIndex::loadIndex(const string &path)
       setUpdateTs(ts);
     }
     else if (ckid.find("Checkpoint:binlog") != string::npos) {
+    // ckptid=Checkpoint:binlog:binlog.000516:6761
       size_t p1 = ckid.rfind(":");
       binlogPosition = atol(ckid.substr(p1+1).c_str());
       size_t p2 = ckid.rfind(":", p1 - 1);
-      binlogFile     = ckid.substr(p2, (p1-p2));
+      binlogFile     = ckid.substr(p2+1, (p1-(p2+1)));
       setLastUpdateCoordinates(binlogFile, binlogPosition);
     }
 
@@ -993,6 +992,7 @@ class SharedLockGuard {
   public:
     SharedLockGuard(AbstractVectorIndex *h_index) : m_index(h_index) {}
     ~SharedLockGuard() { if (m_index) m_index->unlockShared(); }
+    void clear() { m_index = nullptr; }
   private:
      AbstractVectorIndex *m_index{nullptr};
 };
@@ -1054,6 +1054,28 @@ bool VectorIndexCollection::close(AbstractVectorIndex *hindex)
 
   delete hindex; /* no other thread can hold shared lock */
   return true;
+}
+
+/* FindEarliestBinlogFile() - Find the oldest binlog file from all
+ * the "online" vector indexes checkpoint info.
+ */
+string VectorIndexCollection::FindEarliestBinlogFile() {
+  string ret = "";
+  for (auto entry : m_indexes) {
+    string binlogfile;
+    size_t binlogpos;
+    if (entry.second->supportsIncrUpdates()) {
+      entry.second->getLastUpdateCoordinates(binlogfile, binlogpos);
+      if (ret == "") 
+        ret = binlogfile;
+      else if (binlogfile < ret)
+        ret = binlogfile;
+    }
+  }
+  if (ret == "zzzzzz.bin")
+    ret = "";
+  debug_print("FindEarliestBinlogFile : %s.", ret.c_str());
+  return ret;
 }
 
 static VectorIndexCollection g_indexes;
@@ -1350,6 +1372,7 @@ extern "C" bool myvector_ann_set_init(UDF_INIT *initid, UDF_ARGS *args, char *me
   }
   char *col                 = args->args[0];
   AbstractVectorIndex *vi = g_indexes.get(col);
+  SharedLockGuard l(vi);
   if (!vi) {
     sprintf(message, "Vector index (%s) not defined or not open for access.",
             col);
@@ -1854,6 +1877,7 @@ void myvector_open_index_impl(char *vecid, char *details, char *pkidcol,
       }
       existing = false;
     }
+    SharedLockGuard l(vi);
 
     string trackingColumn = "", threads = "";
     int    nthreads = 0;
@@ -1862,12 +1886,12 @@ void myvector_open_index_impl(char *vecid, char *details, char *pkidcol,
     if (vo.getOption("track").length()) {
        trackingColumn = vo.getOption("track");
     }
-    if (vo.getOption("threads").length()) {
+    if (vo.getOption("threads").length()) { // override
        threads  = vo.getOption("threads");
        nthreads = atoi(threads.c_str());
     }
     else {
-        nthreads = myvector_index_bg_threads;
+       nthreads = myvector_index_bg_threads;
     }
 
     if (!strcmp(action, "save")) {
@@ -1875,9 +1899,11 @@ void myvector_open_index_impl(char *vecid, char *details, char *pkidcol,
     }
     else if (!strcmp(action, "drop")) {
       vi->dropIndex(myvector_index_dir);
+      l.clear();
       g_indexes.close(vi);
       vi = nullptr;
     }
+ 
     else if (!strcmp(action, "load")) {
       debug_print("Loading index %s.", vecid);
       vi->loadIndex(myvector_index_dir); // will handle 'reload' also
@@ -2108,8 +2134,7 @@ extern "C" bool myvector_row_distance_init(UDF_INIT *initid, UDF_ARGS *args,
     return true;
   }
   initid->const_item = 0;
-  fprintf(stderr, "myvector_row_distance decimals = %d\n", initid->decimals);
-  initid->decimals = 31;
+  initid->decimals = 20; /* For some reason, this is explicitly needed here */
   return false;
 }
 extern "C" double myvector_row_distance(UDF_INIT *, UDF_ARGS *args, char *,
@@ -2139,13 +2164,13 @@ void myvector_table_op(const string &dbname, const string &tbname,
                        const string &binlogfile, const size_t &binlogpos) {
    string vecid = dbname + "." + tbname + "." + cname;
    AbstractVectorIndex *vi = g_indexes.get(vecid);
+   SharedLockGuard l(vi);
    if (vi) {
      string binlogfileold;
      size_t binlogposold;
      vi->getLastUpdateCoordinates(binlogfileold, binlogposold);
      if (isAfter(binlogfile, binlogpos,  binlogfileold, binlogposold)) {
        vi->insertVector(vec.data(), vi->getDimension(), pkid);
-       //vi->setLastUpdateCoordinates(binlogfile, binlogpos);
      } else {
        debug_print("Skipping index update (%s %lu) < (%s %lu).",
                    binlogfile.c_str(), binlogpos, binlogfileold.c_str(), binlogposold);
@@ -2153,15 +2178,30 @@ void myvector_table_op(const string &dbname, const string &tbname,
    }
 }
 
+/* myvector_checkpoint_index() - Incrementally persist a vector index. Check
+ * hnswdisk.i for implementation details. This routine is called from the 
+ * binlog event listener thread at every binlog file rotation. The frequency
+ * can be changed in future if needed.
+ */
 void myvector_checkpoint_index(const string &dbtable, const string &veccol,
                                const string &binlogFile, size_t binlogPos) {
   string vecid = dbtable + "." + veccol;
   AbstractVectorIndex *vi = g_indexes.get(vecid);
+  SharedLockGuard l(vi);
   if (vi) {
+    string binlogfileold;
+    size_t binlogposold;
+    vi->getLastUpdateCoordinates(binlogfileold, binlogposold);
     debug_print("Checkpoint index %s at (%s %lu)\n", vecid.c_str(),
                 binlogFile.c_str(), binlogPos);
-    vi->setLastUpdateCoordinates(binlogFile, binlogPos);
-    vi->saveIndex(myvector_index_dir, "checkpoint");
+    if (isAfter(binlogFile, binlogPos,  binlogfileold, binlogposold)) {
+      vi->setLastUpdateCoordinates(binlogFile, binlogPos);
+      vi->saveIndex(myvector_index_dir, "checkpoint");
+    }
   }
+}
+
+string myvector_find_earliest_binlog_file() {
+  return g_indexes.FindEarliestBinlogFile();
 }
 /* end of myvector.cc */

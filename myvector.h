@@ -150,6 +150,8 @@ class VectorIndexCollection
 
     bool                 close(AbstractVectorIndex *hindex);
 
+    string               FindEarliestBinlogFile();
+
   private:
     unordered_map<string, AbstractVectorIndex*> m_indexes;
     mutex m_mutex;
@@ -158,5 +160,6 @@ class VectorIndexCollection
 #define MYVECTOR_BUFF_SIZE       1024
 
 extern long myvector_index_bg_threads;
+extern long myvector_feature_level;
 
 #endif  // PLUGIN_MYVECTOR_H

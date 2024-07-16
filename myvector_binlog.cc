@@ -1,4 +1,25 @@
+/*  Copyright (c) 2024 - p3io.in / shiyer22@gmail.com */
+/*
+   This program is free software; you can redistribute it and/or modify
+   it under the terms of the GNU General Public License, version 2.0,
+   as published by the Free Software Foundation.
 
+   This program is also distributed with certain software (including
+   but not limited to OpenSSL) that is licensed under separate terms,
+   as designated in a particular file or component or in included license
+   documentation.  The authors of MySQL hereby grant you an additional
+   permission to link the program and your derivative works with the
+   separately licensed software that they have included with MySQL.
+
+   This program is distributed in the hope that it will be useful,
+   but WITHOUT ANY WARRANTY; without even the implied warranty of
+   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+   GNU General Public License, version 2.0, for more details.
+
+   You should have received a copy of the GNU General Public License
+   along with this program; if not, write to the Free Software
+   Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
+*/
 #include <fcntl.h>
 #include <inttypes.h>
 #include <signal.h>
@@ -53,6 +74,7 @@ Format_description_event glob_description_event(BINLOG_VERSION, server_version);
 void myvector_table_op(const string &dbname, const string &tbname, const string &cname,
                        unsigned int pkid, vector<unsigned char> &vec,
                        const string &binlogfile, const size_t &pos);
+string myvector_find_earliest_binlog_file();
 
 typedef struct
 {
@@ -261,7 +283,6 @@ void parseRowsEvent(const unsigned char *event_buf, unsigned int event_len,
       default:
               fprintf(stderr, "unrecognized column type %d\n", (int)tev.columnTypes[i]);
     } // switch
-    fprintf(stderr, "parseRowsEvent - index now is %d.\n", index);
   } // for columns
 
   VectorIndexUpdateItem *item = new VectorIndexUpdateItem();
@@ -275,10 +296,8 @@ void parseRowsEvent(const unsigned char *event_buf, unsigned int event_len,
   item->binlogFile_ = currentBinlogFile;
   item->binlogPos_  = currentBinlogPos;
   updates.push_back(item);
-  fprintf(stderr, "parseRowsEvent event len = %u, consumed = %d, id = %u\n", event_len, index, idVal);
   //index += 4;
   if (index >= event_len) break; // done - multi rows
-  else fprintf(stderr, "fetching more rows\n");
 
   } // while (true) - single row or multi-row event!
   return;
@@ -290,7 +309,6 @@ void parseRowsEvent(const unsigned char *event_buf, unsigned int event_len,
  */
 void parseRotateEvent(const unsigned char *event_buf, unsigned int event_len,
                       string &binlogfile, size_t &binlogpos, bool offs) {
-  fprintf(stderr, "Rotate Event Length = %u\n", event_len);
   int index = EVENT_HEADER_LENGTH;
   size_t position = 0;
 
@@ -574,6 +592,11 @@ void myvector_binlog_loop(int id) {
   
   int ret;
 
+  if (myvector_feature_level & 1) {
+    fprintf(stderr, "Binlog event thread is disabled!\n");
+    return;
+  }
+
   /* wait till mysql is open to access */
   while (1) {
 
@@ -599,9 +622,13 @@ void myvector_binlog_loop(int id) {
 
   OpenAllOnlineVectorIndexes(&mysql);
 
+  string startbinlog = myvector_find_earliest_binlog_file();
+
   MYSQL_RPL rpl;
   memset(&rpl, 0, sizeof(rpl));
   rpl.file_name = NULL;
+  if (startbinlog.length())
+    rpl.file_name = startbinlog.c_str();
   rpl.start_position = 4;
   rpl.server_id=1;
   ret = mysql_binlog_open(&mysql, &rpl);
@@ -621,7 +648,6 @@ void myvector_binlog_loop(int id) {
      unsigned long event_len  = rpl.size - 1;
      const unsigned char *event_buf = rpl.buffer + 1;
 
-     fprintf(stderr, "\nEvent found of type %d, length = %lu\n",(int)type, event_len);
 
      if (type == binary_log::ROTATE_EVENT) {
        if (currentBinlogFile.length()) {
@@ -654,7 +680,8 @@ void myvector_binlog_loop(int id) {
      }
      cnt++;
   } // while (binlog_fetch)
-  fprintf(stderr, "Exiting binlog func\n");
+  fprintf(stderr, "Exiting binlog func, error %s\n", mysql_error(&mysql));
+  //TODO : need to handle "Exiting binlog func, error Could not find first log file name in binary log index file"
 } // myvector_binlog_loop()
 
 void vector_q_thread_fn(int id)

@@ -182,7 +182,7 @@
 
     void makeIndexConsistent(const std::string &hnswFile, bool &consistent,
                         size_t &outts) {
-    // time=Fri May  3 19:51:09 2024,ts=1714746069:304098,ckptid=CheckPoint:trackingts=1714746054,status=11000|
+    // ckptid=Checkpoint:binlog:binlog.000516:6761
       std::string statusFileName = hnswFile + ".status";
       char buf1[256], buf2[256];
 
@@ -440,7 +440,8 @@
     saveIndexHeader(hnswFile);
 
     for (auto nodeId : mx_nodeUpdates) {
-        char *nodeVectorAndLevel0Links = getDataByInternalId(nodeId);
+        //char *nodeVectorAndLevel0Links = getDataByInternalId(nodeId);
+        char *nodeVectorAndLevel0Links = (char *)get_linklist0(nodeId);
         
         size_t ofs = (nodeVectorAndLevel0Links - data_level0_memory_) + HNSW_FILE_METADATA_SIZE;
         Lseek(hnswFile, ofs, SEEK_SET, hnswFileName);
@@ -464,6 +465,7 @@
         size_t ofs = (level0Links - data_level0_memory_) + HNSW_FILE_METADATA_SIZE;
         Lseek(hnswFile, ofs, SEEK_SET, hnswFileName);
         Write(hnswFile, level0Links, size_links_level0_, hnswFileName, __LINE__);
+        debug_print("Write level0 links of %lu at %lu.", nodeId, ofs);
     }
 
     Fsync(hnswFile, hnswFileName);
@@ -780,7 +782,17 @@
 
         // This write() could do GBs of data write. All vectors & all level0
         // links are written to disk by this single Write() call.
-        write(hnswFile, data_level0_memory_, cur_element_count * size_data_per_element_);
+        size_t xx = cur_element_count;
+        size_t wrc = 0, wc = (cur_element_count * size_data_per_element_);
+        while (1) {
+          ssize_t ret = write(hnswFile, &data_level0_memory_[wrc], wc);
+          if (ret < 0) {
+            break;
+          }
+          wrc += ret;
+          wc -= ret;
+          if (!wc) break;
+        }
 
         Fsync(hnswFile, hnswFileName);
         Close(hnswFile, hnswFileName);
@@ -833,11 +845,13 @@
         readBinaryPOD(input, offsetLevel0_);
         readBinaryPOD(input, max_elements_);
         readBinaryPOD(input, cur_element_count);
-
+#if 0
         size_t max_elements = max_elements_i;
         if (max_elements < cur_element_count)
             max_elements = max_elements_;
         max_elements_ = max_elements;
+#endif
+        size_t max_elements = max_elements_;
         readBinaryPOD(input, size_data_per_element_);
         readBinaryPOD(input, label_offset_);
         readBinaryPOD(input, offsetData_);
