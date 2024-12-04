@@ -636,7 +636,7 @@ class HierarchicalDiskNSW : public AlgorithmInterface<dist_t> {
 
                     setListCount(ll_other, indx);
                     // Nearest K:
-#if HNSWLIB_DEAD_CODE
+#ifdef HNSWLIB_DEAD_CODE
                     /*int indx = -1;
                     for (int j = 0; j < sz_link_list_other; j++) {
                         dist_t d = fstdistfunc_(getDataByInternalId(data[j]), getDataByInternalId(rez[idx]), dist_func_param_);
@@ -1127,6 +1127,7 @@ class HierarchicalDiskNSW : public AlgorithmInterface<dist_t> {
             // Do nothing for the first element
             enterpoint_node_ = 0;
             maxlevel_ = curlevel;
+            addNodeToFlushList(cur_c); // MyVector - first element!
         }
 
         // Releasing lock for the maximum level

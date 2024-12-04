@@ -128,7 +128,7 @@ typedef size_t labeltype;
 class BaseFilterFunctor {
  public:
     virtual bool operator()(hnswlib::labeltype id) { return true; }
-    virtual ~BaseFilterFunctor() {};
+    virtual ~BaseFilterFunctor() {}
 };
 
 template<typename dist_t>

@@ -143,86 +143,90 @@ char *latin1 = const_cast<char *>("latin1");
 const set<string> MYVECTOR_INDEX_TYPES{"KNN", "HNSW", "HNSW_BV"};
 
 
-inline bool isValidIndexType(string &indextype) {
-  return (MYVECTOR_INDEX_TYPES.find(indextype) !=
+inline bool isValidIndexType(const string & indextype) 
+{
+    return (MYVECTOR_INDEX_TYPES.find(indextype) !=
             MYVECTOR_INDEX_TYPES.end());
 }
 
-inline int MyVectorStorageLength(int dim)
+inline int MyVectorStorageLength(int dim) 
 {
-  return (dim * sizeof(FP32)) + MYVECTOR_COLUMN_EXTRA_LEN;
+    return (dim * sizeof(FP32)) + MYVECTOR_COLUMN_EXTRA_LEN;
 }
 
 inline int MyVectorDimFromStorageLength(int length)
 {
-  return (length - MYVECTOR_COLUMN_EXTRA_LEN) / sizeof(FP32);
+    return (length - MYVECTOR_COLUMN_EXTRA_LEN) / sizeof(FP32);
 }
 
 inline int MyVectorBVStorageLength(int dim)
 {
-  return (dim / BITS_PER_BYTE) + MYVECTOR_COLUMN_EXTRA_LEN;
+    return (dim / BITS_PER_BYTE) + MYVECTOR_COLUMN_EXTRA_LEN;
 }
 
 inline int MyVectorBVDimFromStorageLength(int length)
 {
-  return (length - MYVECTOR_COLUMN_EXTRA_LEN) * BITS_PER_BYTE;
+    return (length - MYVECTOR_COLUMN_EXTRA_LEN) * BITS_PER_BYTE;
 }
 
-
 /* Compute L2/Eucliean squared distance via optimized function from hnswlib */
-double computeL2Distance(FP32 *v1, FP32 *v2, int dim)
+double computeL2Distance(const FP32 * __restrict v1, const FP32 * __restrict v2, int dim)
 {
-  hnswlib::L2Space         sp(dim);
-  hnswlib::DISTFUNC<FP32>  distfn;
-  double dist = 0.0;
-  size_t sdim = dim;
+    hnswlib::L2Space         sp(dim);
+    hnswlib::DISTFUNC<FP32>  distfn;
+    double                   dist = 0.0;
+    size_t                   sdim = dim;
 
-  if (v1 && v2 && dim) {
-    distfn = sp.get_dist_func();
-    dist   = distfn(v1,v2,&sdim);
-  }
+    if (v1 && v2 && dim)
+    {
+        distfn = sp.get_dist_func();
+        dist   = distfn(v1, v2, &sdim);
+    }
 
-  return dist;
+    return dist;
 }
 
 /* Compute InnerProduct distance via optimized function from hnswlib */
-double computeIPDistance(FP32 *v1, FP32 *v2, int dim)
+double computeIPDistance(const FP32 * __restrict v1, const FP32 * __restrict v2, int dim)
 {
-  hnswlib::InnerProductSpace sp(dim);
-  hnswlib::DISTFUNC<FP32>    distfn;
-  double dist = 0.0;
-  size_t sdim = dim;
+    hnswlib::InnerProductSpace sp(dim);
+    hnswlib::DISTFUNC<FP32>    distfn;
+    double                     dist = 0.0;
+    size_t                     sdim = dim;
 
-  if (v1 && v2 && dim) {
-    distfn = sp.get_dist_func();
-    dist   = distfn(v1,v2,&sdim);
-  }
+    if (v1 && v2 && dim)
+    {
+        distfn = sp.get_dist_func();
+        dist   = distfn(v1,v2,&sdim);
+    }
 
-  return dist;
+    return dist;
 }
 
 /* Compute Cosine distance using standard formula */
-double computeCosineDistance(FP32 *v1, FP32 *v2, int dim)
+double computeCosineDistance(const FP32 * __restrict v1, const FP32 * __restrict v2, int dim)
 {
-  double dist = 0.0, v1v2 = 0.0, normv1 = 0.0, normv2 = 0.0;
+    double dist = 0.0, v1v2 = 0.0, normv1 = 0.0, normv2 = 0.0;
 
-  for (int i = 0; i < dim; i++) {
-    v1v2   += (v1[i] * v2[i]);
-    normv1 += (v1[i] * v1[i]);
-    normv2 += (v2[i] * v2[i]);
-  }
-  double t = (sqrt(normv1 * normv2));
-  if (t)
-    dist = (double)v1v2 / t;
+    for (int i = 0; i < dim; i++) 
+    {
+        v1v2   += (v1[i] * v2[i]);
+        normv1 += (v1[i] * v1[i]);
+        normv2 += (v2[i] * v2[i]);
+    }
 
-  return (1 - dist);
+    double t = (sqrt(normv1 * normv2));
+    if (t)
+        dist = (double)v1v2 / t;
+
+    return (1 - dist);
 }
 static int fdebug = 0;
-float HammingDistanceFn(const void* __restrict pVect1, const void* __restrict pVect2, const void* __restrict qty_ptr) {
 
-    if (fdebug) debug_print("Entered Hamming Distance Fn %p %p.", pVect1, pVect2);
-
-    size_t qty = *((size_t*)qty_ptr); // dimension of the vector
+/* HammingDistanceFn - Calculate Hamming distance between 2 bit vectors. Prototype is in HNSWLIB style */
+float HammingDistanceFn(const void * __restrict pVect1, const void * __restrict pVect2, const void * __restrict qty_ptr)
+{
+    size_t qty = *((size_t*)qty_ptr); /// dimension of the vector
     float dist = 0;
     unsigned long ldist = 0;
     unsigned long* a = (unsigned long*)pVect1;
@@ -233,19 +237,21 @@ float HammingDistanceFn(const void* __restrict pVect1, const void* __restrict pV
      * the diff'ing bit positions and that is the distance. Thus smaller
      * distance implies the vectors are 'nearer'/'similar' to each other.
      */
-    // TODO - Use AVX2/AVX512 or try __builtin_popcountll()
     size_t iter = (qty / (sizeof(unsigned long) * BITS_PER_BYTE));
-    for (size_t i = 0; i < iter; i++) {
-       unsigned long res = (*a ^ *b); a++; b++;
-#ifdef SLOW_CODE
-       while (res > 0) {
-         ldist += (res & 1);
-         res >>= 1;
-       }
-#endif
-       ldist += __builtin_popcountll(res);
-    }
+    for (size_t i = 0; i < iter; i++)
+    {
+        unsigned long res = (*a ^ *b); a++; b++;
 
+#ifdef SLOW_CODE
+        while (res > 0)
+        {
+            ldist += (res & 1);
+            res >>= 1;
+        }
+#endif
+
+        ldist += __builtin_popcountll(res);
+    }
     dist = ldist;
     return dist;
 }
@@ -258,7 +264,8 @@ class HammingBinaryVectorSpace : public hnswlib::SpaceInterface<float> {
     size_t data_size_;
     size_t dim_;
 
- public:
+public:
+
     HammingBinaryVectorSpace(size_t dim) {
         fstdistfunc_ = HammingDistanceFn;
         dim_         = dim;
@@ -281,236 +288,247 @@ class HammingBinaryVectorSpace : public hnswlib::SpaceInterface<float> {
 };
 
 
-/* KNNIndex - a vector index type that implements brute-force KNN search in
+/* KNNIndex - A vector index type that implements brute-force KNN search in
  * the MyVector plugin. This index type could possibly be faster than SQL
  * performing ORDER BY myvector_distance(...) [as long as all vectors fit
  * in memory].
  */
 class KNNIndex : public AbstractVectorIndex
 {
-  public:
-          KNNIndex(const string &name, const string &options);
+public:
+    KNNIndex(const string & name, const string & options);
 
-          ~KNNIndex() { }
+    ~KNNIndex() { }
 
-          /* Next 3 are no-op in the KNN in-memory index */
-          bool saveIndex(const string &path, const string &option = "");
+    /* Next 3 methods are no-op in the KNN in-memory index */
+    bool saveIndex(const string & path, const string & option = "");
           
-          bool saveIndexIncr(const string &path, const string &option = "");
+    bool saveIndexIncr(const string & path, const string & option = "");
           
-          bool loadIndex(const string &path);
+    bool loadIndex(const string & path);
 
-          bool dropIndex(const string &path);
+    bool dropIndex(const string & path);
           
-          bool initIndex();
+    bool initIndex();
 
-          bool closeIndex();
+    bool closeIndex();
           
-          string getName() { return m_name; }
-          string getType() { return "KNN"; }
+    string getName() { return m_name; }
+    string getType() { return "KNN"; }
 
-          bool searchVectorNN(VectorPtr qvec, int dim,
-                          vector<KeyTypeInteger> &keys, int n);
-          bool insertVector(VectorPtr vec, int dim, KeyTypeInteger id);
+    bool searchVectorNN(VectorPtr qvec, int dim,
+                        vector<KeyTypeInteger> & keys, int n);
+    bool insertVector(VectorPtr vec, int dim, KeyTypeInteger id);
 
-          bool        supportsIncrUpdates()
-          { return true; }
+    bool        supportsIncrUpdates() { return true; }
 
-          bool        supportsPersist()
-          { return false; }
+    bool        supportsPersist() { return false; }
 
-          bool        supportsConcurrentUpdates()
-          { return false; }
+    bool        supportsConcurrentUpdates() { return false; } /// no mutexing!
           
-          bool        supportsIncrRefresh()
-          { return true; }
+    bool        supportsIncrRefresh() { return true; }
 
-          bool        isReady()
-          { return true; }
+    bool        isReady() { return true; }
 
-          bool        isDirty()
-          { return false; }
+    bool        isDirty() { return false; } /// No persistence
 
-          int getDimension()                     { return m_dim; }
+    int         getDimension() { return m_dim; }
           
-          bool startParallelBuild(int nthreads)  { return false; }
+    bool        startParallelBuild(int nthreads)  { return false; }
 
-          void setUpdateTs(unsigned long ts)     { m_updateTs = ts; }
+    void        setUpdateTs(unsigned long ts)     { m_updateTs = ts; }
 
-          unsigned long getUpdateTs()            { return m_updateTs; }
+    unsigned long getUpdateTs()                   { return m_updateTs; }
           
-          unsigned long getRowCount()            { return m_n_rows; }
+    unsigned long getRowCount()                   { return m_n_rows; }
 
-  private:
-          string          m_name;
-          string          m_options;
-          int             m_dim;
-          unsigned long   m_updateTs;
-          MyVectorOptions m_optionsMap;
+private:
+    string          m_name;
+    string          m_options;
+    int             m_dim;
+    unsigned long   m_updateTs;
+    MyVectorOptions m_optionsMap;
 
-          atomic<unsigned long>    m_n_rows{0};
-          atomic<unsigned long>    m_n_searches{0};
+    atomic<unsigned long>    m_n_rows{0};
+    atomic<unsigned long>    m_n_searches{0};
 
-          /* The in-memory data store for the vectors */
-          vector< pair<vector<FP32>, KeyTypeInteger> >  m_vectors;
+    /* The in-memory data store for the vectors */
+    vector< pair<vector<FP32>, KeyTypeInteger> >  m_vectors;
+  
+    double (*m_distfn)(const FP32 * v1, const FP32 * v2, int dim);
 };
 
-KNNIndex::KNNIndex(const string &name, const string &options) 
-  : m_name(name), m_options(options), m_optionsMap(options), m_updateTs(0)  {
-  m_dim        = atoi(m_optionsMap.getOption("dim").c_str());
+KNNIndex::KNNIndex(const string & name, const string & options) 
+    : m_name(name), m_options(options), m_optionsMap(options), m_updateTs(0)
+{ 
+    m_dim = atoi(m_optionsMap.getOption("dim").c_str());
+
+    m_distfn = computeL2Distance;
+    if (m_optionsMap.getOption("dist").size())
+    {
+        if (m_optionsMap.getOption("dist") == "Cosine")
+            m_distfn = computeCosineDistance;
+        else if (m_optionsMap.getOption("dist") == "IP")
+            m_distfn = computeIPDistance;
+    }
 }
 
 /* Brute-force, exact search KNN implemented using in-memory vector<> and
  * priority queue. Potentially faster than SELECT ... ORDER BY myvector_distance()
  */
-bool KNNIndex::searchVectorNN(VectorPtr qvec, int dim, vector<KeyTypeInteger> &keys, int n)
+bool KNNIndex::searchVectorNN(VectorPtr qvec, int dim, vector<KeyTypeInteger> & keys, int n)
 {
-  priority_queue< pair<FP32,KeyTypeInteger> > pq;
-  keys.clear();
+    priority_queue< pair<FP32, KeyTypeInteger> > pq;
+    keys.clear();
 
-  /* Use priority queue to find out 'n' neighbours with least distance */
-  for (auto row : m_vectors) {
-    vector<FP32> &a = row.first;
-    double dist = computeCosineDistance((FP32 *)qvec, a.data(), dim);
-    if (pq.size() < n)
-      pq.push({dist, row.second});
-    else {
-      auto top = pq.top();
-      if (dist < top.first) {
-        pq.pop();
-        pq.push({dist,row.second});
-      }
+    /* Use priority queue to find out 'n' neighbours with least distance */
+    for (auto row : m_vectors)
+    {
+        vector<FP32> & a = row.first;
+        double dist = m_distfn((FP32 *)qvec, a.data(), dim);
+
+        if (pq.size() < n)
+            pq.push({dist, row.second});
+        else
+        {
+            auto top = pq.top();
+            if (dist < top.first)
+            {
+                pq.pop();
+                pq.push({dist,row.second});
+            }
+        }
+    } /* for */
+
+    while (pq.size())
+    {
+        auto r = pq.top(); pq.pop();
+        keys.push_back(r.second);
     }
-  } /* for */
 
-  while (pq.size()) {
-    auto r = pq.top(); pq.pop();
-    keys.push_back(r.second);
-  }
+    reverse(keys.begin(), keys.end()); // nearest to farthest
 
-  reverse(keys.begin(), keys.end()); // nearest to farthest
-
-  m_n_searches++;
-  return true;
+    m_n_searches++;
+    return true;
 }
 
 /* insertVector - just stash the vector into in-memory vector<> collection */
 bool KNNIndex::insertVector(VectorPtr vec, int dim, KeyTypeInteger id)
 {
-  FP32 *fvec = static_cast<FP32 *>(vec);
-  vector<FP32> row(fvec, fvec + dim);
-  m_vectors.push_back({row, id}); // simple index - multithread unsafe
+    FP32 *fvec = static_cast<FP32 *>(vec);
+    vector<FP32> row(fvec, fvec + dim);
+    m_vectors.push_back({row, id}); /// simple index - multithread unsafe
 
-  m_n_rows++;
+    m_n_rows++;
   
-  return true;
+    return true;
 }
 
-bool KNNIndex::saveIndex([[maybe_unused]]const string &path, const string &option) {
+bool KNNIndex::saveIndex(const string &, const string &)
+{
+    my_plugin_log_message(&gplugin, MY_WARNING_LEVEL,
+        "KNN Memory Index (%s) - Save Index to disk is no-op", m_name.c_str());
 
-  my_plugin_log_message(&gplugin, MY_WARNING_LEVEL,
-    "KNN Memory Index (%s) - Save Index to disk is no-op", m_name.c_str());
-
-  return true;
+    return true;
 }
 
-bool KNNIndex::saveIndexIncr(const string &path, const string &option) {
-  my_plugin_log_message(&gplugin, MY_WARNING_LEVEL,
-    "KNN Memory Index (%s) - Save Index Incr to disk is no-op", m_name.c_str());
+bool KNNIndex::saveIndexIncr(const string &, const string &)
+{ 
+    my_plugin_log_message(&gplugin, MY_WARNING_LEVEL,
+        "KNN Memory Index (%s) - Save Index Incr to disk is no-op", m_name.c_str());
 
-  return true;
+    return true;
 }
 
-bool KNNIndex::dropIndex([[maybe_unused]]const string &path) {
+bool KNNIndex::dropIndex(const string &)
+{
+    my_plugin_log_message(&gplugin, MY_WARNING_LEVEL,
+        "KNN Memory Index (%s) - Drop Index is no-op", m_name.c_str());
 
-  my_plugin_log_message(&gplugin, MY_WARNING_LEVEL,
-    "KNN Memory Index (%s) - Drop Index is no-op", m_name.c_str());
-
-  return true;
-
+    return true;
 }
 
-bool KNNIndex::loadIndex([[maybe_unused]]const string &path) {
-  my_plugin_log_message(&gplugin, MY_WARNING_LEVEL,
-    "KNN Memory Index (%s) - Load Index is no op", m_name.c_str());
-
-  return true;
+bool KNNIndex::loadIndex(const string &)
+{ 
+     my_plugin_log_message(&gplugin, MY_WARNING_LEVEL,
+        "KNN Memory Index (%s) - Load Index is no op", m_name.c_str());
+     return true;
 }
 
-bool KNNIndex::initIndex() {
-  debug_print("KNN Memory Index (%s) - initIndex()", m_name.c_str());
-  m_vectors.clear();
-  m_n_rows = 0;
-  m_n_searches = 0;
-  return true;
+bool KNNIndex::initIndex()
+{
+    debug_print("KNN Memory Index (%s) - initIndex()", m_name.c_str());
+
+    /// nothing much to do!!
+    m_vectors.clear();
+    m_n_rows = 0;
+    m_n_searches = 0;
+
+    return true;
 }
 
-bool KNNIndex::closeIndex() {
-  return true;
+bool KNNIndex::closeIndex()
+{
+    return true;
 }
 
 
 class HNSWMemoryIndex : public AbstractVectorIndex
 {
-  public:
-          HNSWMemoryIndex(const string &name, const string &options);
+public:
+    HNSWMemoryIndex(const string & name, const string & options);
 
-          ~HNSWMemoryIndex();
+    ~HNSWMemoryIndex();
           
-          bool        supportsIncrUpdates()
-          { return m_incrUpdates; }
-          bool        supportsIncrRefresh()
-          { return m_incrRefresh; }
+    bool        supportsIncrUpdates() { return m_incrUpdates; }
+    bool        supportsIncrRefresh() { return m_incrRefresh; }
+    bool        isDirty()             { return m_isDirty; }
 
-          bool        isDirty()
-          { return m_isDirty; }
-
-          bool saveIndex(const string &path, const string &option);
+    bool saveIndex(const string & path, const string & option);
           
-          bool saveIndexIncr(const string &path, const string &option);
+    bool saveIndexIncr(const string & path, const string & option);
 
-          bool loadIndex(const string &path);
+    bool loadIndex(const string & path);
 
-          bool dropIndex(const string &path);
+    bool dropIndex(const string & path);
 
-          bool initIndex();
+    bool initIndex();
 
-          bool closeIndex();
+    bool closeIndex();
 
-          string getName() { return m_name; }
+    string getName() { return m_name; }
 
-          string getType() { return m_type; }
+    string getType() { return m_type; }
 
-          bool searchVectorNN(VectorPtr qvec, int dim, vector<KeyTypeInteger> &keys,
-                          int n);
+    bool searchVectorNN(VectorPtr qvec, int dim, vector<KeyTypeInteger> & keys, int n);
           
-          bool insertVector(VectorPtr vec, int dim, KeyTypeInteger id);
+    bool insertVector(VectorPtr vec, int dim, KeyTypeInteger id);
 
 
-          int getDimension()                  { return m_dim; }
+    int getDimension()                  { return m_dim; }
 
-          void setUpdateTs(unsigned long ts)  { m_updateTs = ts; }
+    void setUpdateTs(unsigned long ts)  { m_updateTs = ts; }
 
-          unsigned long getUpdateTs()         { return m_updateTs; }
+    unsigned long getUpdateTs()         { return m_updateTs; }
           
-          unsigned long getRowCount()         { return m_n_rows; }
+    unsigned long getRowCount()         { return m_n_rows; }
           
-          bool startParallelBuild(int nthreads);
+    bool startParallelBuild(int nthreads);
     
-          virtual hnswlib::SpaceInterface<float>* getSpace(size_t dim);
+    virtual hnswlib::SpaceInterface<float> * getSpace(size_t dim);
 
-          virtual void setAlgHnsw(hnswlib::SpaceInterface<float> *sp,
-                                  hnswlib::AlgorithmInterface<FP32> *ha);
+    virtual void setAlgHnsw(hnswlib::SpaceInterface<float> *sp,
+                            hnswlib::AlgorithmInterface<FP32> *ha);
 
-          int getEfConstruction() { return m_ef_construction; }
-          int getM() { return m_M; }
-          int getSize() { return m_size; }
+    int getEfConstruction() { return m_ef_construction; }
+    int getM()              { return m_M; }
+    int getSize()           { return m_size; }
 
-          void getLastUpdateCoordinates(string &binlogFile, size_t &binlogPos);
-          void setLastUpdateCoordinates(const string &binlogFile, const size_t &binlogPos);
-          void getCheckPointString(string &ckstr);
+    void getLastUpdateCoordinates(string & binlogFile, size_t & binlogPos);
+    void setLastUpdateCoordinates(const string & binlogFile, const size_t & binlogPos);
+    void getCheckPointString(string & ckstr);
 
-  private:
+private:
     string        m_name;
     string        m_type;
     string        m_options;
@@ -524,9 +542,7 @@ class HNSWMemoryIndex : public AbstractVectorIndex
     int         m_size;
           
     hnswlib::AlgorithmInterface<FP32> *m_alg_hnsw = nullptr;
-    //hnswlib::L2Space* m_space = nullptr;
     hnswlib::SpaceInterface<float>* m_space = nullptr;
-
 
     atomic<unsigned long>    m_n_rows{0};
     atomic<unsigned long>    m_n_searches{0};
@@ -544,16 +560,16 @@ class HNSWMemoryIndex : public AbstractVectorIndex
     bool                   flushBatchParallel();
     bool                   flushBatchSerial();
 
-
     int                    m_threads;
 
+    /// last update coordinates
     string                 m_binlogFile;
     size_t                 m_binlogPosition;
 
 };
 
 
-HNSWMemoryIndex::HNSWMemoryIndex(const string &name, const string &options)
+HNSWMemoryIndex::HNSWMemoryIndex(const string & name, const string & options)
   : m_name(name), m_options(options), m_optionsMap(options), m_updateTs(0)
 {
   m_dim               = atoi(m_optionsMap.getOption("dim").c_str());
@@ -573,16 +589,18 @@ HNSWMemoryIndex::HNSWMemoryIndex(const string &name, const string &options)
 
 }
 
-HNSWMemoryIndex::~HNSWMemoryIndex() {
-  if (m_alg_hnsw) delete m_alg_hnsw;
-  if (m_space)    delete m_space;
+HNSWMemoryIndex::~HNSWMemoryIndex()
+{
+    if (m_alg_hnsw)
+        delete m_alg_hnsw;
+    if (m_space)
+        delete m_space;
 }
 
 bool HNSWMemoryIndex::initIndex()
 {
   debug_print("hnsw initIndexO %p %s %d %d %d %d %d", this, m_name.c_str(), m_dim,
                m_size, m_ef_construction, m_ef_search, m_M);
-  //m_space    = new hnswlib::L2Space(m_dim);
   m_space    = getSpace(m_dim);
 
   m_alg_hnsw = new hnswlib::HierarchicalDiskNSW<FP32>(m_space, m_size,
@@ -668,7 +686,7 @@ bool HNSWMemoryIndex::saveIndexIncr(const string &path, const string &option) {
   return true;
 }
 
-bool HNSWMemoryIndex::loadIndex(const string &path)
+bool HNSWMemoryIndex::loadIndex(const string & path)
 {
   if (m_alg_hnsw) delete m_alg_hnsw;
   if (m_space)    delete m_space;
@@ -725,63 +743,62 @@ bool HNSWMemoryIndex::loadIndex(const string &path)
   return true;
 }
 
-bool HNSWMemoryIndex::dropIndex(const string &path)
+bool HNSWMemoryIndex::dropIndex(const string & path)
 {
-  /* Force drop index - delete files and free memory */
-  string indexfile = path + "/" + m_name + ".hnsw.index";
-  unlink(indexfile.c_str());
-  string linksfile = path + "/" + m_name + ".hnsw.index.links";
-  unlink(linksfile.c_str());
-  string linksdatafile = path + "/" + m_name + ".hnsw.index.links.data";
-  unlink(linksdatafile.c_str());
-  string statusfile = path + "/" + m_name + ".hnsw.index.status";
-  unlink(statusfile.c_str());
+    /* Force drop index - delete files and free memory */
+    string indexfile = path + "/" + m_name + ".hnsw.index";
+    unlink(indexfile.c_str());
+    string linksfile = path + "/" + m_name + ".hnsw.index.links";
+    unlink(linksfile.c_str());
+    string linksdatafile = path + "/" + m_name + ".hnsw.index.links.data";
+    unlink(linksdatafile.c_str());
+    string statusfile = path + "/" + m_name + ".hnsw.index.status";
+    unlink(statusfile.c_str());
 
-  if (m_alg_hnsw) delete m_alg_hnsw;
-  m_alg_hnsw = nullptr;
+    if (m_alg_hnsw) delete m_alg_hnsw;
+    m_alg_hnsw = nullptr;
 
-  if (m_space)    delete m_space;
-  m_space    = nullptr;
+    if (m_space)    delete m_space;
+    m_space    = nullptr;
 
-  return true;
+    return true;
 }
 
-bool HNSWMemoryIndex::closeIndex() {
-  return true;
+bool HNSWMemoryIndex::closeIndex()
+{
+    return true;
 }
     
-hnswlib::SpaceInterface<float>* HNSWMemoryIndex::getSpace(size_t dim) {
-  debug_print("getSpace for %s",m_type.c_str());
-  if (m_type == "HNSW") 
-    return new hnswlib::L2Space(m_dim);
-  else if (m_type == "HNSW_BV")
-    return new HammingBinaryVectorSpace(m_dim);
+hnswlib::SpaceInterface<float>* HNSWMemoryIndex::getSpace(size_t dim)
+{
+    if (m_type == "HNSW") 
+        return new hnswlib::L2Space(m_dim);
+    else if (m_type == "HNSW_BV")
+        return new HammingBinaryVectorSpace(m_dim);
 
-  return nullptr;
+    return nullptr;
 }
 
-thread_local unordered_map<KeyTypeInteger, double> *tls_distances = nullptr;
+thread_local unordered_map<KeyTypeInteger, double> * tls_distances = nullptr; /// experimental
 
-bool HNSWMemoryIndex::searchVectorNN(VectorPtr qvec, int dim,
-                          vector<KeyTypeInteger> &keys,
-                          int n) {
+bool HNSWMemoryIndex::searchVectorNN(VectorPtr qvec, int dim, vector<KeyTypeInteger> & keys, int n)
+{
 
-  priority_queue<pair<FP32, hnswlib::labeltype>> result =
-                  m_alg_hnsw->searchKnn(qvec, n);
+    priority_queue<pair<FP32, hnswlib::labeltype>> result =
+                            m_alg_hnsw->searchKnn(qvec, n);
 
-  if (n == 13) fdebug = 1; else fdebug = 0;
+    keys.clear();
+    tls_distances->clear();
+    while (!result.empty())
+    {
+        keys.push_back(result.top().second);
+        (*tls_distances)[result.top().second] = result.top().first; /// pkid -> distance
+        result.pop();
+    }
 
-  keys.clear();
-  tls_distances->clear();
-  while (!result.empty()) {
-    keys.push_back(result.top().second);
-    (*tls_distances)[result.top().second] = result.top().first;
-    result.pop();
-  }
-
-  reverse(keys.begin(), keys.end()); // nearest to farthest
-  m_n_searches++;
-  return true;
+    reverse(keys.begin(), keys.end()); // nearest to farthest
+    m_n_searches++;
+    return true;
 }
 
 void HNSWMemoryIndex::getLastUpdateCoordinates(string &binlogFile,
@@ -1091,7 +1108,7 @@ const string MYVECTOR_SEARCH_USAGE = "MYVECTOR_SEARCH(baseTable,idColumn,vectorC
 
 
 /* MySQL Column COMMENT max. length is 1024.e.g comment with all fields set :
- * MYVECTOR Column |type=HNSW,dim=1536,size=1000000,M=64,ef=100,track=updatets,threads=8
+ * MYVECTOR Column |type=HNSW,dim=1536,size=1000000,M=64,ef=100,track=updatets,threads=8,dist=L2
  */
 const size_t MYVECTOR_MAX_COLUMN_INFO_LEN = 128;
 
@@ -1103,211 +1120,228 @@ const size_t MYVECTOR_MAX_VECTOR_DIM      = 4096;
 /* rewriteMyVectorColumnDef() - rewrite the MYVECTOR(...) annotation in
  * CREATE TABLE & ALTER TABLE.
  */
-bool rewriteMyVectorColumnDef(const string &query, string &newQuery) {
-   // support multiple MYVECTOR(...) columns 
-   size_t pos;
-   bool   error = false;
+bool rewriteMyVectorColumnDef(const string & query, string & newQuery)
+{
+    // support multiple MYVECTOR(...) columns 
+    size_t pos;
+    bool   error = false;
 
-   newQuery = query;
-   while ((pos = newQuery.find(MYVECTOR_COLUMN_A)) != string::npos)
-   {
-     size_t spos = pos + MYVECTOR_COLUMN_A.length();
-     size_t epos = newQuery.find_first_of(')', pos);
+    newQuery = query;
+    while ((pos = newQuery.find(MYVECTOR_COLUMN_A)) != string::npos)
+    {
+        size_t spos = pos + MYVECTOR_COLUMN_A.length();
+        size_t epos = newQuery.find_first_of(')', pos);
 
-     if (epos == string::npos)
-     {
-       my_plugin_log_message(&gplugin, MY_ERROR_LEVEL, 
-                             "MYVECTOR column terminating ')' not found.");
-       error = true;
-       break;
-     }
+        if (epos == string::npos)
+        {
+            my_plugin_log_message(&gplugin, MY_ERROR_LEVEL, 
+                                  "MYVECTOR column terminating ')' not found.");
+            error = true;
+            break;
+        }
 
-     string colinfo = newQuery.substr(spos, (epos - spos));
-     if (colinfo.length() > MYVECTOR_MAX_COLUMN_INFO_LEN) {
-       my_plugin_log_message(&gplugin, MY_ERROR_LEVEL, 
-               "MYVECTOR column info too long, length = %d.", colinfo.length());
-       error = true;
-       break;
-     }
+        string colinfo = newQuery.substr(spos, (epos - spos));
+        if (colinfo.length() > MYVECTOR_MAX_COLUMN_INFO_LEN)
+        {
+            my_plugin_log_message(&gplugin, MY_ERROR_LEVEL, 
+                       "MYVECTOR column info too long, length = %d.", colinfo.length());
+            error = true;
+            break;
+        }
 
-     MyVectorOptions vo(colinfo);
+        MyVectorOptions vo(colinfo);
      
-     if (!vo.isValid()) {
-       my_plugin_log_message(&gplugin, MY_ERROR_LEVEL, 
-         "MYVECTOR column options parse error, options=%s.", colinfo.c_str());
-       error = true;
-       break;
-     }
+        if (!vo.isValid())
+        {
+            my_plugin_log_message(&gplugin, MY_ERROR_LEVEL, 
+                        "MYVECTOR column options parse error, options=%s.", colinfo.c_str());
+            error = true;
+            break;
+        }
 
-     string vtype = vo.getOption("type");
-     if (vtype == "") {
-       colinfo = MYVECTOR_DEFAULT_INDEX_TYPE + "," + colinfo;
-       vtype   = "KNN"; // TODO
-       vo.setOption("type",vtype);
-     }
+        string vtype = vo.getOption("type");
+        if (vtype == "")
+        {
+            colinfo = MYVECTOR_DEFAULT_INDEX_TYPE + "," + colinfo;
+            vtype   = "KNN";
+            vo.setOption("type",vtype);
+        }
 
-     if (vo.getOption("dim") == "") {
-       my_plugin_log_message(&gplugin, MY_ERROR_LEVEL, 
-                             "MYVECTOR column dimension not defined.");
-       error = true;
-       break;
-     }
+        if (vo.getOption("dim") == "")
+        {
+            my_plugin_log_message(&gplugin, MY_ERROR_LEVEL, 
+                                  "MYVECTOR column dimension not defined.");
+            error = true;
+            break;
+        }
 
-     bool addTrackingColumn = false;
-     string trackingColumn;
-     if (vo.getOption("track").length()) {
-       addTrackingColumn = true;
-       trackingColumn    = vo.getOption("track");
-     }
+        bool addTrackingColumn = false;
+        string trackingColumn;
+        if (vo.getOption("track").length())
+        {
+            addTrackingColumn = true;
+            trackingColumn    = vo.getOption("track");
+        }
      
-     int dim = atoi(vo.getOption("dim").c_str());
+        int dim = atoi(vo.getOption("dim").c_str());
 
-     if (dim <= 1 || dim > MYVECTOR_MAX_VECTOR_DIM) {
-       my_plugin_log_message(&gplugin, MY_ERROR_LEVEL, 
-                             "MYVECTOR column dimension incorrect %d.", dim);
-       error = true;
-       break;
-     }
+        if (dim <= 1 || dim > MYVECTOR_MAX_VECTOR_DIM)
+        {
+             my_plugin_log_message(&gplugin, MY_ERROR_LEVEL, 
+                                   "MYVECTOR column dimension incorrect %d.", dim);
+             error = true;
+             break;
+        }
 
-     size_t varblength = 0;
-     if (vtype != "HNSW_BV")
-       varblength = MyVectorStorageLength(dim);
-     else
-       varblength = MyVectorBVStorageLength(dim); // binary vector
+        size_t varblength = 0;
+        if (vtype != "HNSW_BV")
+            varblength = MyVectorStorageLength(dim);
+        else
+            varblength = MyVectorBVStorageLength(dim); // binary vector
 
-     string newColumn;
-     newColumn = "VARBINARY(" + to_string(varblength) +
-                 ") COMMENT 'MYVECTOR Column |" + colinfo + "'";
+        string newColumn = "VARBINARY(" + to_string(varblength) + ") COMMENT 'MYVECTOR Column |" + colinfo + "'";
 
-     if (addTrackingColumn) {
-       newColumn = newColumn + ", " + trackingColumn + " TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP";
-     }
-     newQuery = newQuery.substr(0, pos) + newColumn + newQuery.substr(epos+1);
-   } // while
+        if (addTrackingColumn)
+        {
+            newColumn = newColumn + ", " + trackingColumn + " TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP";
+        }
+        newQuery = newQuery.substr(0, pos) + newColumn + newQuery.substr(epos+1);
+    } // while
 
-   my_plugin_log_message(&gplugin, MY_INFORMATION_LEVEL, 
-                         "MYVECTOR column rewrite \n%s.", newQuery.c_str());
-   return error;
+    my_plugin_log_message(&gplugin, MY_INFORMATION_LEVEL, 
+                          "MYVECTOR column rewrite \n%s.", newQuery.c_str());
+    return error;
 }
 
 /* rewriteMyVectorIsANN() - rewrite the "WHERE MYVECTOR_IS_ANN(...)" annotation */
-bool rewriteMyVectorIsANN(const string &query, string &newQuery) {
-   size_t pos;
-   bool   error = false;
+bool rewriteMyVectorIsANN(const string & query, string & newQuery)
+{
+    size_t pos;
+    bool   error = false;
 
-   newQuery = query;
-   while ((pos = newQuery.find(MYVECTOR_IS_ANN_A)) != string::npos)
-   {
-     size_t spos = pos + MYVECTOR_IS_ANN_A.length();
-     size_t epos = spos+1;
-     int ob = 1;
-     /* We can have nested () in MYVECTOR_IS_ANN
-      * e.g MYVECTOR_IS_ANN(a,b,myvector_construct(...))
-      */
-     while (epos < newQuery.length()) {
-       if (newQuery[epos] == '(') ob++;
-       if (newQuery[epos] == ')') {
-         ob--;
-         if (!ob) break; // done
-       }
-       epos++;
-     }
-     string strparams = newQuery.substr(spos, (epos - spos));
-     
-     vector<string> annparams;
-     split(strparams, annparams);
+    newQuery = query;
+    while ((pos = newQuery.find(MYVECTOR_IS_ANN_A)) != string::npos)
+    {
+        size_t spos = pos + MYVECTOR_IS_ANN_A.length();
+        size_t epos = spos+1;
+        int ob = 1;
+        /* We can have nested () in MYVECTOR_IS_ANN
+         * e.g MYVECTOR_IS_ANN(a,b,myvector_construct(...))
+         */
+        while (epos < newQuery.length())
+        {
+            if (newQuery[epos] == '(') ob++;
+            if (newQuery[epos] == ')')
+            {
+                ob--;
+                if (!ob) break; /// done
+            }
+            epos++;
+        }
 
-#if 0
-     if (annparams.size() < 3 || annparams.size() > 4) {
-       my_plugin_log_message(&gplugin, MY_ERROR_LEVEL, 
-         "Incorrect MYVECTOR_IS_ANN options : %s\nExample usage : %s",
-         strparams.c_str(), MYVECTOR_IS_ANN_USAGE.c_str());
-       error = true;
-       break;
-     }
-#endif
-     string idcolexpr = annparams[1];
-     idcolexpr = idcolexpr.substr(1, idcolexpr.length()-2); // remove the single quote
+        if (ob)
+        {
+            error = true;
+            break;
+        }
+        string strparams = newQuery.substr(spos, (epos - spos));
      
-     stringstream ss;
-     ss << "( " << idcolexpr << " IN "
-        << "(select `myvecid` from JSON_TABLE(myvector_ann_set(" << strparams
-        << "), " << '"' << "$[*]" << '"'
-        << " COLUMNS(`myvecid` BIGINT PATH \"$\")) `myvector_ann`) )";
-     
-     newQuery = newQuery.substr(0, pos) +
-                ss.str() +
-                newQuery.substr(epos+1);
-   } // while
+        vector<string> annparams;
+        split(strparams, annparams);
 
-   my_plugin_log_message(&gplugin, MY_INFORMATION_LEVEL, 
-                         "MYVECTOR_IS_ANN query rewrite \n%s.",
-                         newQuery.c_str());
-   return error;
+        if (annparams.size() < 3)
+        {
+            error = true;
+            break;
+        }
+
+        string idcolexpr = annparams[1];
+        idcolexpr = idcolexpr.substr(1, idcolexpr.length()-2); // remove the single quote
+     
+        stringstream ss;
+        ss << "( " << idcolexpr << " IN "
+           << "(select `myvecid` from JSON_TABLE(myvector_ann_set(" << strparams
+           << "), " << '"' << "$[*]" << '"'
+           << " COLUMNS(`myvecid` BIGINT PATH \"$\")) `myvector_ann`) )";
+     
+        newQuery = newQuery.substr(0, pos) +
+                   ss.str() +
+                   newQuery.substr(epos+1);
+    } // while
+
+    my_plugin_log_message(&gplugin, MY_INFORMATION_LEVEL, 
+                          "MYVECTOR_IS_ANN query rewrite \n%s.",
+                          newQuery.c_str());
+    return error;
 }
 
 /* rewriteMyVectorSearch - rewrite the MYVECTOR_SEARCH[...] annotation */
-bool rewriteMyVectorSearch(const string &query, string &newQuery)
+bool rewriteMyVectorSearch(const string & query, string & newQuery)
 {
-   bool error = false;
-   size_t pos;
+    bool error = false;
+    size_t pos;
 
-   newQuery = query;
-   string delim;
-   /* No nested [] in MYVECTOR_SEARCH[...] */
-   while ((pos = newQuery.find(MYVECTOR_SEARCH_A)) != string::npos) {
-     size_t spos = pos + MYVECTOR_SEARCH_A.length();
-     size_t epos;
-     if (newQuery[spos] == '[')
-       delim = "]";
-     else if (newQuery[spos] == '{')
-       delim = "}";
-     else {
-       error = true;
-       break;
-     }
-     spos += delim.length();
-     if ((epos = newQuery.find(delim, spos)) == string::npos) {
-       error = true;
-       break;
-     }
+    newQuery = query;
+    string delim;
+    /* No nested [] in MYVECTOR_SEARCH[...] */
+    while ((pos = newQuery.find(MYVECTOR_SEARCH_A)) != string::npos)
+    {
+        size_t spos = pos + MYVECTOR_SEARCH_A.length();
+        size_t epos;
+        if (newQuery[spos] == '[')
+            delim = "]";
+        else if (newQuery[spos] == '{')
+            delim = "}";
+        else
+        {
+            error = true;
+            break;
+        }
+        spos += delim.length();
+        if ((epos = newQuery.find(delim, spos)) == string::npos)
+        {
+            error = true;
+            break;
+        }
 
-     string strparams = newQuery.substr(spos, (epos - spos));
+        string strparams = newQuery.substr(spos, (epos - spos));
      
-     vector<string> annparams;
-     split(strparams, annparams);
+        vector<string> annparams;
+        split(strparams, annparams);
      
-     if (annparams.size() < 4 || annparams.size() > 5) {
-       my_plugin_log_message(&gplugin, MY_ERROR_LEVEL, 
-              "Incorrect MYVECTOR_SEARCH syntax : %s\nExample usage : %s",
-              strparams.c_str(), MYVECTOR_SEARCH_USAGE.c_str());
-       error = true;
-       break;
-     }
+        if (annparams.size() < 4 || annparams.size() > 5)
+        {
+            my_plugin_log_message(&gplugin, MY_ERROR_LEVEL, 
+                                  "Incorrect MYVECTOR_SEARCH syntax : %s\nExample usage : %s",
+                                  strparams.c_str(), MYVECTOR_SEARCH_USAGE.c_str());
+            error = true;
+            break;
+        }
 
 /*  select article5 from MYVECTOR_SEARCH[test.t1, id, test.t1.v1, query, n=5]; */
 
-     string basetable = annparams[0];
-     string idcol     = annparams[1];
-     string vecindex  = annparams[2];
-     string queryt    = annparams[3];
+        string basetable = annparams[0];
+        string idcol     = annparams[1];
+        string vecindex  = annparams[2];
+        string queryt    = annparams[3];
 
-     string annopt    = "";
-     if (annparams.size() > 4)
-       annopt    = annparams[4];
+        string annopt    = "";
+        if (annparams.size() > 4)
+            annopt    = annparams[4];
    
-     stringstream ss;
-     ss << basetable << " where " << idcol
-        << " in (select myvecid from " << queryt << " b, json_table(myvector_ann_set('"
-        << vecindex << "','" << idcol << "', searchvec, '" << annopt << "') , " << '"'
-        << "$[*]" << '"' << " COLUMNS(`myvecid` BIGINT PATH " << '"' << "$" << '"'
-        << ")) `myvector_ann`)"; // 'searchvec' is hard-coded column name
+        stringstream ss;
+        /// The query table must have a vector column named 'searchvec'
+        ss << basetable << " where " << idcol
+           << " in (select myvecid from " << queryt << " b, json_table(myvector_ann_set('"
+           << vecindex << "','" << idcol << "', searchvec, '" << annopt << "') , " << '"'
+           << "$[*]" << '"' << " COLUMNS(`myvecid` BIGINT PATH " << '"' << "$" << '"'
+           << ")) `myvector_ann`)";
      
-     newQuery = newQuery.substr(0, pos) +
-                ss.str() +
-                newQuery.substr(epos+delim.length());
-   }
-   debug_print("MYVECTOR_SEARCH query rewrite=\n%s.", newQuery.c_str());
+        newQuery = newQuery.substr(0, pos) +
+                   ss.str() +
+                   newQuery.substr(epos + delim.length());
+    }
+    debug_print("MYVECTOR_SEARCH query rewrite=\n%s.", newQuery.c_str());
 
    return error;
 }
@@ -1363,42 +1397,52 @@ bool myvector_query_rewrite(const string &query, string *rewritten_query) {
   return (*rewritten_query != query);
 }
 
-extern "C" bool myvector_ann_set_init(UDF_INIT *initid, UDF_ARGS *args, char *message) {
-  initid->ptr = nullptr;
-  if (args->arg_count < 3 || args->arg_count > 4) {
-    strcpy(message, "Incorrect arguments, usage : "
-           "myvector_ann_set('vec column', 'id column', searchvec [,nn=<n>]).");
-    return true; // error
-  }
-  char *col                 = args->args[0];
-  AbstractVectorIndex *vi = g_indexes.get(col);
-  SharedLockGuard l(vi);
-  if (!vi) {
-    sprintf(message, "Vector index (%s) not defined or not open for access.",
-            col);
-    return true; // error
-  }
+extern "C" bool myvector_ann_set_init(UDF_INIT *initid, UDF_ARGS *args, char *message)
+{
+    initid->ptr = nullptr;
+    if (args->arg_count < 3 || args->arg_count > 4)
+    {
+        strcpy(message, "Incorrect arguments, usage : "
+               "myvector_ann_set('vec column', 'id column', searchvec [,nn=<n>]).");
+        return true; // error
+    }
 
-  /* Users can possibly ask for 100s of neighbours. With buffer of 128000,
-   * about 12800 PK ids can be filled in the return string
-   */
-  initid->max_length = MYVECTOR_DISPLAY_MAX_LEN;
-  initid->ptr        = (char *)malloc(initid->max_length);
-  (*h_udf_metadata_service)->result_set(initid, "charset", latin1);
+    char *col                 = args->args[0];
+    AbstractVectorIndex *vi = g_indexes.get(col);
+    SharedLockGuard l(vi);
+    if (!vi)
+    {
+        sprintf(message, "Vector index (%s) not defined or not open for access.",
+                col);
+        return true; // error
+    }
 
-  tls_distances = new unordered_map<KeyTypeInteger, double>();
-  return false;
+    /* Users can possibly ask for 100s of neighbours. With buffer of 128000,
+     * about 12800 PK ids can be filled in the return string
+     */
+    initid->max_length = MYVECTOR_DISPLAY_MAX_LEN;
+    initid->ptr        = (char *)malloc(initid->max_length);
+    (*h_udf_metadata_service)->result_set(initid, "charset", latin1);
+
+    if (!tls_distances)
+        tls_distances = new unordered_map<KeyTypeInteger, double>();
+
+    return false;
 }
 
-extern "C" void myvector_ann_set_deinit(UDF_INIT *initid) {
-  if (initid && initid->ptr) free(initid->ptr);
-  delete tls_distances;
-  tls_distances = nullptr;
+extern "C" void myvector_ann_set_deinit(UDF_INIT * initid)
+{
+    if (initid && initid->ptr)
+        free(initid->ptr);
+    if (tls_distances)
+        delete tls_distances;
+    tls_distances = nullptr;
 }
 
-extern "C" char* myvector_ann_set(UDF_INIT *initid, UDF_ARGS *args, char *result,
-                          unsigned long *length, unsigned char *is_null,
-                          unsigned char *error) {
+extern "C" char* myvector_ann_set(UDF_INIT * initid, UDF_ARGS * args, char * result,
+                          unsigned long * length, unsigned char * is_null,
+                          unsigned char * error)
+{
   char *col                 = args->args[0];
   char *idcol               = args->args[1];
   FP32 *searchvec           = (FP32 *)args->args[2];
@@ -1422,7 +1466,7 @@ extern "C" char* myvector_ann_set(UDF_INIT *initid, UDF_ARGS *args, char *result
     
     nn = min((const unsigned int)nn, MYVECTOR_MAX_ANN_RETURN_COUNT);
   }
-  
+ 
   AbstractVectorIndex *vi = g_indexes.get(col);
   SharedLockGuard l(vi);
   
@@ -1452,27 +1496,33 @@ extern "C" char* myvector_ann_set(UDF_INIT *initid, UDF_ARGS *args, char *result
 }
 
 /* SQFloatVectorToBinaryVector - Simple scalar quantization to convert
- * a sequence of natice floats to a binary vector. If the float value is
+ * a sequence of native floats to a binary vector. If the float value is
  * greater than 0, then corresponding bit is set to 1 in the binary vector.
  */
-int SQFloatVectorToBinaryVector(FP32 *fvec, unsigned long *ivec, int dim)
+int SQFloatVectorToBinaryVector(FP32 * fvec, unsigned long * ivec, int dim)
 {
-  memset(ivec, 0, (dim / BITS_PER_BYTE ));  // 3rd param is bytes
+    memset(ivec, 0, (dim / BITS_PER_BYTE ));  // 3rd param is bytes
 
-  unsigned long elem = 0;
-  unsigned long idx  = 0;
+    unsigned long elem = 0;
+    unsigned long idx  = 0;
 
-  for (int i = 0; i < dim; i++) {
-    elem = elem << 1;
-    if (fvec[i] > 0) {
-      elem = elem | 1;
+    for (int i = 0; i < dim; i++)
+    {
+        elem = elem << 1;
+        if (fvec[i] > 0)
+        {
+            elem = elem | 1;
+        }
+
+        if (((i + 1) % 64) == 0)
+        { // 8 bytes packed (i.e 64 dims in 1 ulong)
+            ivec[idx] = elem;
+            elem = 0;
+            idx++;
+        }
     }
-    if (((i + 1) % 64) == 0) { // 8 bytes packed (i.e 64 dims in 1 ulong)
-      ivec[idx] = elem;
-      elem = 0; idx++;
-    }
-  }
-  return (idx * sizeof(unsigned long)); // number of bytes
+    /// TODO : if dim is not a mulitple of 64
+    return (idx * sizeof(unsigned long)); // number of bytes
 }
 
 char *myvector_construct_bv(const std::string &srctype, char *src, char *dst,
@@ -1688,7 +1738,7 @@ extern "C" char *myvector_display(UDF_INIT *initid, UDF_ARGS *args, char *result
   
   stringstream ostr;
 
-#if MYVECTOR_VERIFY_CHECKSUM
+#ifdef MYVECTOR_VERIFY_CHECKSUM
   ha_checksum cksum1;
   char        *raw = args->args[0];
   /* Checksum is at the end */
@@ -1747,16 +1797,19 @@ extern "C" void myvector_display_deinit(UDF_INIT *initid)
 { if (initid && initid->ptr) free(initid->ptr); }
 
 /* UDF MYVECTOR_DISTANCE() Implementation */
-extern "C" bool myvector_distance_init(UDF_INIT *, UDF_ARGS *args, char *message) {
-  if (args->arg_count < 2) {
-    strcpy(message, "myvector_distance() requires atleast 2 arguments.");
-    return true; // error
-  }
-  if (args->arg_count > 3) {
-    strcpy(message, "Too many arguments, usage : myvector_distance(v1,v2 [,dist]).");
-    return true; // error
-  }
-  return false;
+extern "C" bool myvector_distance_init(UDF_INIT *, UDF_ARGS * args, char * message)
+{
+    if (args->arg_count < 2)
+    {
+        strcpy(message, "myvector_distance() requires atleast 2 arguments.");
+        return true; /// error
+    }
+    if (args->arg_count > 3)
+    {
+        strcpy(message, "Too many arguments, usage : myvector_distance(v1,v2 [,dist]).");
+        return true; /// error
+    }
+    return false;
 }
 
 extern "C" bool myvector_construct_binaryvector_init(UDF_INIT *initid, UDF_ARGS *args, char *message) {
@@ -1811,7 +1864,7 @@ extern "C" double myvector_distance(UDF_INIT *, UDF_ARGS *args, char *is_null,
   if (args->arg_count == 3)
      disttype = args->args[2];
 
-  double (*distfn)(FP32 *v1, FP32 *v2, int dim);
+  double (*distfn)(const FP32 *v1, const FP32 *v2, int dim);
   // TODO : Cache function pointer in _init() if the 3rd argument is a constant literal
   if (!disttype) {
     *error = 1; // NULL distance measure
@@ -2127,55 +2180,67 @@ extern "C" long long myvector_is_valid(
 extern "C" void myvector_is_valid_deinit(UDF_INIT *) { }
 
 extern "C" bool myvector_row_distance_init(UDF_INIT *initid, UDF_ARGS *args,
-                                       char *message) {
-  if (!initid || args->arg_count != 1) {
-    strcpy(message, "Incorrect arguments to myvector_row_distance(), "
-                    "Usage : myvector_row_distance(idval)");
-    return true;
-  }
-  initid->const_item = 0;
-  initid->decimals = 20; /* For some reason, this is explicitly needed here */
-  return false;
+                                           char *message)
+{
+    if (!initid || args->arg_count != 1)
+    {
+        strcpy(message, "Incorrect arguments to myvector_row_distance(), "
+                        "Usage : myvector_row_distance(idval)");
+        return true;
+    }
+    initid->const_item = 0;
+    initid->decimals = 20; /* For some reason, this is explicitly needed here */
+    return false;
 }
+
 extern "C" double myvector_row_distance(UDF_INIT *, UDF_ARGS *args, char *,
-                          char *) {
-  double dist =  999999.99;
-  KeyTypeInteger idval= *((KeyTypeInteger *) args->args[0]);
+                                        char *)
+{
+    double dist =  99999999999.99;
+    KeyTypeInteger idval= *((KeyTypeInteger *) args->args[0]);
 
-  if (tls_distances->size()) {
-    if (tls_distances->find(idval) != tls_distances->end())
-      dist = (*tls_distances)[idval];
-  }
+    if (tls_distances->size())
+    {
+        if (tls_distances->find(idval) != tls_distances->end())
+            dist = (*tls_distances)[idval];
+    }
 
-  return dist;
+    return dist;
 }
 extern "C" void myvector_row_distance_deinit(UDF_INIT *) { }
 
-bool isAfter(const string &binlogfile2, const size_t binlogpos2,
-             const string &binlogfile1, const size_t binlogpos1) {
-  return ((binlogfile2 == binlogfile1 && binlogpos2 > binlogpos1) ||
-          (binlogfile2 > binlogfile1));
+bool isAfter(const string & binlogfile2, const size_t binlogpos2,
+             const string & binlogfile1, const size_t binlogpos1)
+{
+    return ((binlogfile2 == binlogfile1 && binlogpos2 > binlogpos1) ||
+           (binlogfile2 > binlogfile1));
           
 }
 
-void myvector_table_op(const string &dbname, const string &tbname, 
-                       const string &cname, unsigned int pkid,
-                       vector<unsigned char> &vec,
-                       const string &binlogfile, const size_t &binlogpos) {
-   string vecid = dbname + "." + tbname + "." + cname;
-   AbstractVectorIndex *vi = g_indexes.get(vecid);
-   SharedLockGuard l(vi);
-   if (vi) {
-     string binlogfileold;
-     size_t binlogposold;
-     vi->getLastUpdateCoordinates(binlogfileold, binlogposold);
-     if (isAfter(binlogfile, binlogpos,  binlogfileold, binlogposold)) {
-       vi->insertVector(vec.data(), vi->getDimension(), pkid);
-     } else {
-       debug_print("Skipping index update (%s %lu) < (%s %lu).",
-                   binlogfile.c_str(), binlogpos, binlogfileold.c_str(), binlogposold);
-     }
-   }
+void myvector_table_op(const string & dbname, const string & tbname, 
+                       const string & cname, unsigned int pkid,
+                       vector<unsigned char> & vec,
+                       const string & binlogfile, const size_t & binlogpos) {
+    string vecid = dbname + "." + tbname + "." + cname;
+    AbstractVectorIndex *vi = g_indexes.get(vecid);
+
+    if (vi)
+    {
+        SharedLockGuard l(vi);
+        string binlogfileold;
+        size_t binlogposold;
+
+        vi->getLastUpdateCoordinates(binlogfileold, binlogposold);
+        if (isAfter(binlogfile, binlogpos, binlogfileold, binlogposold))
+        {
+            vi->insertVector(vec.data(), vi->getDimension(), pkid);
+        }
+        else
+        { 
+            debug_print("Skipping index update (%s %lu) < (%s %lu).",
+                        binlogfile.c_str(), binlogpos, binlogfileold.c_str(), binlogposold);
+        }
+    }
 }
 
 /* myvector_checkpoint_index() - Incrementally persist a vector index. Check
@@ -2183,22 +2248,27 @@ void myvector_table_op(const string &dbname, const string &tbname,
  * binlog event listener thread at every binlog file rotation. The frequency
  * can be changed in future if needed.
  */
-void myvector_checkpoint_index(const string &dbtable, const string &veccol,
-                               const string &binlogFile, size_t binlogPos) {
-  string vecid = dbtable + "." + veccol;
-  AbstractVectorIndex *vi = g_indexes.get(vecid);
-  SharedLockGuard l(vi);
-  if (vi) {
-    string binlogfileold;
-    size_t binlogposold;
-    vi->getLastUpdateCoordinates(binlogfileold, binlogposold);
-    debug_print("Checkpoint index %s at (%s %lu)\n", vecid.c_str(),
-                binlogFile.c_str(), binlogPos);
-    if (isAfter(binlogFile, binlogPos,  binlogfileold, binlogposold)) {
-      vi->setLastUpdateCoordinates(binlogFile, binlogPos);
-      vi->saveIndex(myvector_index_dir, "checkpoint");
+void myvector_checkpoint_index(const string & dbtable, const string & veccol,
+                               const string & binlogFile, size_t binlogPos)
+{
+    string vecid = dbtable + "." + veccol;
+    AbstractVectorIndex *vi = g_indexes.get(vecid);
+
+    if (vi)
+    {
+        SharedLockGuard l(vi);
+        string binlogfileold;
+        size_t binlogposold;
+
+        vi->getLastUpdateCoordinates(binlogfileold, binlogposold);
+        debug_print("Checkpoint index %s at (%s %lu)\n", vecid.c_str(),
+                    binlogFile.c_str(), binlogPos);
+        if (isAfter(binlogFile, binlogPos, binlogfileold, binlogposold))
+        {
+            vi->setLastUpdateCoordinates(binlogFile, binlogPos);
+            vi->saveIndex(myvector_index_dir, "checkpoint");
+        }
     }
-  }
 }
 
 string myvector_find_earliest_binlog_file() {

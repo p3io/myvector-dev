@@ -9,209 +9,226 @@
  */
 #define FLUSH_LIST_PARTS                             32
     
-    void Write(int fd, void *buf, size_t nbytes,
-               const std::string &file, int line) {
-      ssize_t rc = write(fd, buf, nbytes);
-      if (rc == -1 || rc != nbytes) {
-        std::stringstream ss;
-        ss << "Error writing " << nbytes << " bytes to " << file
-           << " at line " << line << ",rc = " << rc << ",errno = " << errno;
-        throw std::runtime_error(ss.str());
-      }
+    void Write(int fd, void * buf, size_t nbytes,
+               const std::string & file, int line)
+    {
+        ssize_t rc = write(fd, buf, nbytes);
+        if (rc == -1 || rc != nbytes)
+        {
+            std::stringstream ss;
+            ss << "Error writing " << nbytes << " bytes to " << file
+               << " at line " << line << ",rc = " << rc << ",errno = " << errno;
+            throw std::runtime_error(ss.str());
+        }
     }
 
-    void Fsync(int fd, const std::string &file) {
-      int rc = fsync(fd);
-      if (rc != 0) {
-        std::stringstream ss;
-        ss << "Error during fsync() on " <<  file 
-           << ",fd = " << fd << ",rc = " << rc << ",errno = " << errno;
-        throw std::runtime_error(ss.str());
-      }
+    void Fsync(int fd, const std::string & file)
+    {
+        int rc = fsync(fd);
+        if (rc != 0)
+        {
+            std::stringstream ss;
+            ss << "Error during fsync() on " <<  file 
+               << ",fd = " << fd << ",rc = " << rc << ",errno = " << errno;
+            throw std::runtime_error(ss.str());
+        }
     }
 
-    void Close(int fd, const std::string &file) {
-      int rc = close(fd);
-      if (rc != 0) {
-        std::stringstream ss;
-        ss << "Error during close() on " <<  file 
-           << ",fd = " << fd << ",rc = " << rc << ",errno = " << errno;
-        throw std::runtime_error(ss.str());
-      }
+    void Close(int fd, const std::string & file)
+    {
+        int rc = close(fd);
+        if (rc != 0)
+        {
+            std::stringstream ss;
+            ss << "Error during close() on " <<  file 
+               << ",fd = " << fd << ",rc = " << rc << ",errno = " << errno;
+            throw std::runtime_error(ss.str());
+        }
     }
 
-    off_t Lseek(int fd,  off_t offset, int whence, const std::string &file) {
-      off_t rc = lseek(fd, offset, whence);
-      if (rc == (off_t)-1) {
-        std::stringstream ss;
-        ss << "Error during lseek() on " <<  file 
-           << ",fd = " << fd << ",offset = " << offset << ",errno = " << errno;
-        throw std::runtime_error(ss.str());
-      }
-      return rc;
+    off_t Lseek(int fd,  off_t offset, int whence, const std::string & file)
+    { 
+        off_t rc = lseek(fd, offset, whence);
+        if (rc == (off_t)-1)
+        {
+            std::stringstream ss;
+            ss << "Error during lseek() on " <<  file 
+               << ",fd = " << fd << ",offset = " << offset << ",errno = " << errno;
+            throw std::runtime_error(ss.str());
+        }
+        return rc;
     }
 
-    int Open(const std::string &filepath, int flags, mode_t mode=0) {
-      int fd = open(filepath.c_str(), flags, mode);
-      if (fd == -1) {
-        std::stringstream ss;
-        ss << "Error during open() on " << filepath
-           << ",fd = " << fd << ",flags= " << flags << ",mode=" << mode
-           << ",errno="  << errno;
-        throw std::runtime_error(ss.str());
-      }
-      return fd;
+    int Open(const std::string & filepath, int flags, mode_t mode=0)
+    {
+        int fd = open(filepath.c_str(), flags, mode);
+        if (fd == -1)
+        {
+            std::stringstream ss;
+            ss << "Error during open() on " << filepath
+               << ",fd = " << fd << ",flags= " << flags << ",mode=" << mode
+               << ",errno="  << errno;
+            throw std::runtime_error(ss.str());
+        }
+        return fd;
     }
 
 
     /* A node in the HNSW graph contains the vector and links.
      * We distinguish between :-
      * Full Node flush - New or Updated node, where vector also needs to be
-     * flushed to disk.
+     * flushed to disk -> m_nodeUpdates[]
+     *
      * Node Links Level0 flush - Only the links (or edges list) has to tbe flushed
      * to disk (because the node's links got updated due to another vector insert).
+     *
      * Node Links Level > 0 flush - A very low number of nodes will have level1,
      * level2, level3 ... links updated.
      */
     void addNodeToFlushList(tableint id) 
-      {
+    {
         unsigned int index = rand() % FLUSH_LIST_PARTS;
         std::unique_lock <std::mutex> locklist(m_flushListMutex[index]);
         m_nodeUpdates[index].insert(id);
-      }
+    }
     void addNodeLinksLevel0ToFlushList(tableint id) 
-      {
+    {
         unsigned int index = rand() % FLUSH_LIST_PARTS;
         std::unique_lock <std::mutex> locklist(m_flushListMutex[index]);
         m_nodeLinksLevel0Updates[index].insert(id);
-      }
-    void addNodeLinksLevel0ToFlushList(std::set<tableint> &ids) 
-      {
+    }
+    void addNodeLinksLevel0ToFlushList(std::set<tableint> & ids) 
+    {
         unsigned int index = rand() % FLUSH_LIST_PARTS;
         std::unique_lock <std::mutex> locklist(m_flushListMutex[index]);
         for (auto id : ids)
           m_nodeLinksLevel0Updates[index].insert(id);
-      }
+    }
     void addNodeLinksLevelGt0ToFlushList(tableint id, int level)
-      {
+    {
         unsigned int index = rand() % FLUSH_LIST_PARTS;
         std::unique_lock <std::mutex> locklist(m_flushListMutex[index]);
         m_nodeLinksLevelGt0Updates[index].insert(id);
-      }
-    void addNodeLinksLevelGt0ToFlushList(std::set<tableint> &ids, int level)
-      {
+    }
+    void addNodeLinksLevelGt0ToFlushList(std::set<tableint> & ids, int level)
+    {
         unsigned int index = rand() % FLUSH_LIST_PARTS;
         std::unique_lock <std::mutex> locklist(m_flushListMutex[index]);
         for (auto id : ids)
-          m_nodeLinksLevelGt0Updates[index].insert(id);
-      }
+            m_nodeLinksLevelGt0Updates[index].insert(id);
+    }
 
     /* clearFlushList() - clear the "dirty" nodes lists after a checkpoint.*/
     void clearFlushList()
-      {
-        for (int i = 0; i < FLUSH_LIST_PARTS; i++) {
-          std::unique_lock <std::mutex> locklist(m_flushListMutex[i]);
-          m_nodeUpdates[i].clear();
-          m_nodeLinksLevel0Updates[i].clear();
-          m_nodeLinksLevelGt0Updates[i].clear();
+    {
+        for (int i = 0; i < FLUSH_LIST_PARTS; i++)
+        {
+            std::unique_lock <std::mutex> locklist(m_flushListMutex[i]);
+            m_nodeUpdates[i].clear();
+            m_nodeLinksLevel0Updates[i].clear();
+            m_nodeLinksLevelGt0Updates[i].clear();
         }
-      }
+    }
 
-    typedef enum {
-      CKPT_BEGIN_INCR_PASS1  = 10001,
-      CKPT_END_INCR_PASS1    = 10002,
-      CKPT_BEGIN_INCR_PASS2  = 10003,
-      CKPT_END_INCR_PASS2    = 10004,
-      CKPT_BEGIN_FULL_WRITE  = 10005,
-      CKPT_END_FULL_WRITE    = 10006,
-      CKPT_CONSISTENT        = 11000
+    typedef enum
+    {
+        CKPT_BEGIN_INCR_PASS1  = 10001,
+        CKPT_END_INCR_PASS1    = 10002,
+        CKPT_BEGIN_INCR_PASS2  = 10003,
+        CKPT_END_INCR_PASS2    = 10004,
+        CKPT_BEGIN_FULL_WRITE  = 10005,
+        CKPT_END_FULL_WRITE    = 10006,
+        CKPT_CONSISTENT        = 11000
     } CheckPointState;
 
-    void CreateStatusFile(const std::string &hnswFile)
+    void CreateStatusFile(const std::string & hnswFile)
     {
-      std::string statusFileName = hnswFile + ".status";
-      char buf[512];
+        std::string statusFileName = hnswFile + ".status";
+        char buf[512];
 
-      int ckptf = Open(statusFileName.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0600);
-      memset(buf, '.', sizeof(buf));
-      Write(ckptf, buf, sizeof(buf), statusFileName, __LINE__);
-      Fsync(ckptf, statusFileName);
-      Close(ckptf, statusFileName);
+        int ckptf = Open(statusFileName.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0600);
+        memset(buf, '.', sizeof(buf));
+        Write(ckptf, buf, sizeof(buf), statusFileName, __LINE__);
+        Fsync(ckptf, statusFileName);
+        Close(ckptf, statusFileName);
     }
 
     /* MoveBackCheckPointStatus() - Replace an incompleted checkpoint record
      * with the earlier consistent checkpoint record. This routine is called
      * at end of successful recovery.
      */
-    void MoveBackCheckPointStatus(const std::string &hnswFile) {
-      std::string statusFileName = hnswFile + ".status";
-      char buf1[256], buf2[256];
+    void MoveBackCheckPointStatus(const std::string & hnswFile)
+    {
+        std::string statusFileName = hnswFile + ".status";
+        char buf1[256], buf2[256];
 
+        int stfd = Open(statusFileName.c_str(), O_RDWR);
+        read(stfd, buf1, sizeof(buf1));
+        read(stfd, buf2, sizeof(buf2));
+        Close(stfd, statusFileName);
 
-      int stfd = Open(statusFileName.c_str(), O_RDWR);
-      read(stfd, buf1, sizeof(buf1));
-      read(stfd, buf2, sizeof(buf2));
-      Close(stfd, statusFileName);
+        char *p = strchr(buf1, '|');
+        *p = 0;
+        string logr1(buf1);
 
-      char *p = strchr(buf1, '|');
-      *p = 0;
-      string logr1(buf1);
+        p = strchr(buf2, '|');
+        *p = 0;
+        string logr2(buf2);
 
-      p = strchr(buf2, '|');
-      *p = 0;
-      string logr2(buf2);
+        MyVectorOptions vo1(logr1);
+        string status1 = vo1.getOption("status");
+        string ckptid1 = vo1.getOption("ckptid");
+        CheckPointState cs1 = static_cast<CheckPointState>(atoi(status1.c_str()));
 
-      MyVectorOptions vo1(logr1);
-      string status1 = vo1.getOption("status");
-      string ckptid1 = vo1.getOption("ckptid");
-      CheckPointState cs1 = static_cast<CheckPointState>(atoi(status1.c_str()));
+        MyVectorOptions vo2(logr2);
+        string status2 = vo2.getOption("status");
+        string ckptid2 = vo2.getOption("ckptid");
+        CheckPointState cs2 = static_cast<CheckPointState>(atoi(status2.c_str()));
 
-      MyVectorOptions vo2(logr2);
-      string status2 = vo2.getOption("status");
-      string ckptid2 = vo2.getOption("ckptid");
-      CheckPointState cs2 = static_cast<CheckPointState>(atoi(status2.c_str()));
+        if (cs1 == CKPT_CONSISTENT || cs2 != CKPT_CONSISTENT)
+        {
+            /// TODO
+            throw std::runtime_error("Internal error #1 in MoveBackCheckPointStatus.");
+        }
 
-      if (cs1 == CKPT_CONSISTENT || cs2 != CKPT_CONSISTENT) {
-        // TODO
-        throw std::runtime_error("Internal error #1 in MoveBackCheckPointStatus.");
-      }
-
-      setCheckPointId(ckptid2);
-      setCheckPointComplete(hnswFile);
+        setCheckPointId(ckptid2);
+        setCheckPointComplete(hnswFile);
     }
 
-    void makeIndexConsistent(const std::string &hnswFile, bool &consistent,
-                        size_t &outts) {
-    // ckptid=Checkpoint:binlog:binlog.000516:6761
-      std::string statusFileName = hnswFile + ".status";
-      char buf1[256], buf2[256];
+    void makeIndexConsistent(const std::string & hnswFile, bool & consistent,
+                             size_t & outts)
+    {
+        /// ckptid=Checkpoint:binlog:binlog.000516:6761
+        std::string statusFileName = hnswFile + ".status";
+        char buf1[256], buf2[256];
 
-      consistent = false;
-      outts = 0;
+        consistent = false;
+        outts = 0;
 
-      int stfd = Open(statusFileName.c_str(), O_RDWR);
-      read(stfd, buf1, sizeof(buf1));
-      read(stfd, buf2, sizeof(buf2));
-      Close(stfd, statusFileName);
+        int stfd = Open(statusFileName.c_str(), O_RDWR);
+        read(stfd, buf1, sizeof(buf1));
+        read(stfd, buf2, sizeof(buf2));
+        Close(stfd, statusFileName);
 
-      char *p = strchr(buf1, '|');
-      *p = 0;
-      string logr1(buf1);
-      // split the status line into kv
-      MyVectorOptions vo(logr1);
-      string status = vo.getOption("status");
-      string ckptid = vo.getOption("ckptid");
-      debug_print("makeIndexConsistent %s, current checkpoint status : %s %s",
-                  hnswFile.c_str(), status.c_str(), ckptid.c_str());
+        char *p = strchr(buf1, '|');
+        *p = 0;
+        string logr1(buf1);
+        // split the status line into kv
+        MyVectorOptions vo(logr1);
+        string status = vo.getOption("status");
+        string ckptid = vo.getOption("ckptid");
+        debug_print("makeIndexConsistent %s, current checkpoint status : %s %s",
+                    hnswFile.c_str(), status.c_str(), ckptid.c_str());
 
-      CheckPointState cs = static_cast<CheckPointState>(atoi(status.c_str()));
+        CheckPointState cs = static_cast<CheckPointState>(atoi(status.c_str()));
 
-      if (cs == CKPT_CONSISTENT) {
-	info_print("HNSW index %s is consistent.", hnswFile.c_str());
-        setCheckPointId(ckptid);
-        consistent = true;
-      }
-      
+        if (cs == CKPT_CONSISTENT)
+        {
+            info_print("HNSW index %s is consistent.", hnswFile.c_str());
+            setCheckPointId(ckptid);
+            consistent = true;
+        }
+
       // Check if it was a interrupted full-write, recovery is not possible.
       if (cs == CKPT_BEGIN_FULL_WRITE) {
         error_print("HNSW Index %s is not succesfully saved to disk,"
@@ -364,7 +381,7 @@
     }
 
 
-    saveIndexHeader(ckptFile);
+    saveIndexHeader(ckptFile, ckptFileName);
 
     /* Next is the scope or size of this checkpoint. */
     size_t s = mx_nodeUpdates.size();
@@ -437,7 +454,7 @@
     // Step 2 - Write to real hnsw index file now
     int hnswFile = Open(hnswFileName.c_str(), O_RDWR | O_CREAT, 0600);
 
-    saveIndexHeader(hnswFile);
+    saveIndexHeader(hnswFile, hnswFileName);
 
     for (auto nodeId : mx_nodeUpdates) {
         //char *nodeVectorAndLevel0Links = getDataByInternalId(nodeId);
@@ -537,7 +554,7 @@
       //read all the metadata fields first - directly into members
       readIndexHeader(ckptFile);
 
-      saveIndexHeader(hnswFile);
+      saveIndexHeader(hnswFile, hnswFileName);
 
       cur_element_count = 0; // IMPORTANT
 
@@ -714,21 +731,21 @@
         return size;
     }
 
-    void saveIndexHeader(int hnswFile) {
+    void saveIndexHeader(int hnswFile, const std::string & filename) {
 
-        write(hnswFile, &offsetLevel0_, sizeof(offsetLevel0_));
-        write(hnswFile, &max_elements_, sizeof(max_elements_));
-        write(hnswFile, &cur_element_count, sizeof(cur_element_count));
-        write(hnswFile, &size_data_per_element_, sizeof(size_data_per_element_));
-        write(hnswFile, &label_offset_, sizeof(label_offset_));
-        write(hnswFile, &offsetData_, sizeof(offsetData_));
-        write(hnswFile, &maxlevel_, sizeof(maxlevel_));
-        write(hnswFile, &enterpoint_node_, sizeof(enterpoint_node_));
-        write(hnswFile, &maxM_, sizeof(maxM_));
-        write(hnswFile, &maxM0_, sizeof(maxM0_));
-        write(hnswFile, &M_, sizeof(M_));
-        write(hnswFile, &mult_, sizeof(mult_));
-        write(hnswFile, &ef_construction_, sizeof(ef_construction_));
+        Write(hnswFile, &offsetLevel0_, sizeof(offsetLevel0_), filename, __LINE__);
+        Write(hnswFile, &max_elements_, sizeof(max_elements_), filename, __LINE__);
+        Write(hnswFile, &cur_element_count, sizeof(cur_element_count), filename, __LINE__);
+        Write(hnswFile, &size_data_per_element_, sizeof(size_data_per_element_), filename, __LINE__);
+        Write(hnswFile, &label_offset_, sizeof(label_offset_), filename, __LINE__);
+        Write(hnswFile, &offsetData_, sizeof(offsetData_), filename, __LINE__);
+        Write(hnswFile, &maxlevel_, sizeof(maxlevel_), filename, __LINE__);
+        Write(hnswFile, &enterpoint_node_, sizeof(enterpoint_node_), filename, __LINE__);
+        Write(hnswFile, &maxM_, sizeof(maxM_), filename, __LINE__);
+        Write(hnswFile, &maxM0_, sizeof(maxM0_), filename, __LINE__);
+        Write(hnswFile, &M_, sizeof(M_), filename, __LINE__);
+        Write(hnswFile, &mult_, sizeof(mult_), filename, __LINE__);
+        Write(hnswFile, &ef_construction_, sizeof(ef_construction_), filename, __LINE__);
     }
     
     void readIndexHeader(int hnswFile) {
@@ -778,7 +795,7 @@
         WriteCheckPointStatus(hnswFileName, CKPT_BEGIN_FULL_WRITE);
         int hnswFile = Open(hnswFileName.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0600);
 
-        saveIndexHeader(hnswFile);
+        saveIndexHeader(hnswFile, hnswFileName);
 
         // This write() could do GBs of data write. All vectors & all level0
         // links are written to disk by this single Write() call.
@@ -809,10 +826,10 @@
               std::cout << "Writing links of size " << linkListSize << " for node " << i << std::endl;
             if (linkListSize) {
               unsigned int nodeID = i;
-              write(gt0LinksF, &nodeID, sizeof(nodeID));
-              write(gt0LinksF, &linkListSize, sizeof(linkListSize));
+              Write(gt0LinksF, &nodeID, sizeof(nodeID), linksLocation, __LINE__);
+              Write(gt0LinksF, &linkListSize, sizeof(linkListSize), linksLocation, __LINE__);
 
-              write(gt0LinksDataF, linkLists_[i], linkListSize);
+              Write(gt0LinksDataF, linkLists_[i], linkListSize, linksDataLocation, __LINE__);
             }
         }
         Fsync(gt0LinksF, linksLocation);

@@ -23,7 +23,10 @@
 -- myvectorplugin.sql - MyVector Plugin registration script.
 --
 -- This script should be run as 'root' since all objects are
--- registered in the "mysql" database by default.
+-- registered in the "mysql" database by default. If the MyVector procedures
+-- and views should be created in another database, please change the below line
+
+USE mysql;
 
 INSTALL PLUGIN myvector SONAME 'myvector.so';
 

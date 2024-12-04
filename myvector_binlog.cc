@@ -36,13 +36,10 @@
 #include <condition_variable>
 
 // #include <boost/lockfree/queue.hpp>
-
-#include "caching_sha2_passwordopt-vars.h"
-#include "client/client_priv.h"
+#include "mysql_version.h"  // MYSQL_VERSION_ID
 #include "compression.h"
 #include "libbinlogevents/include/codecs/factory.h"
 #include "libbinlogevents/include/compression/factory.h"
-#include "libbinlogevents/include/compression/payload_event_buffer_istream.h"
 #include "libbinlogevents/include/trx_boundary_parser.h"
 #include "my_byteorder.h"
 #include "my_dbug.h"
@@ -56,12 +53,10 @@
 #include "scope_guard.h"
 #include "sql/binlog_reader.h"
 #include "sql/log_event.h"
-#include "sql/my_decimal.h"
 #include "sql/rpl_constants.h"
 #include "sql/rpl_gtid.h"
 #include "sql_common.h"
 #include "sql_string.h"
-#include "sslopt-vars.h"
 #include "typelib.h"
 #include <unistd.h>
 
@@ -69,7 +64,7 @@
 using namespace std;
 #include "myvectorutils.h"
 
-Format_description_event glob_description_event(BINLOG_VERSION, server_version);
+/// Format_description_event glob_description_event(BINLOG_VERSION, server_version);
 
 void myvector_table_op(const string &dbname, const string &tbname, const string &cname,
                        unsigned int pkid, vector<unsigned char> &vec,
@@ -137,84 +132,88 @@ size_t currentBinlogPos  = 0;
 
 #define EVENT_HEADER_LENGTH 19
 
-typedef struct {
-  unsigned long   tableId;
-  std::string     dbName;
-  std::string     tableName;
-  unsigned int    nColumns;
-  vector<char>    columnTypes;
-  vector<int>     columnMetadata;
+typedef struct
+{
+    unsigned long   tableId;
+    std::string     dbName;
+    std::string     tableName;
+    unsigned int    nColumns;
+    vector<char>    columnTypes;
+    vector<int>     columnMetadata;
 } TableMapEvent;
 
 /* parseTableMapEvent - Parse the TableMap binlog event that appears before
  * any *ROWS* event.
  */
-void parseTableMapEvent(const unsigned char *event_buf, unsigned int event_len,
-                        TableMapEvent &tev)
+void parseTableMapEvent(const unsigned char * event_buf, unsigned int event_len,
+                        TableMapEvent & tev)
 {
-  tev = TableMapEvent();
+    tev = TableMapEvent();
   
-  int index = EVENT_HEADER_LENGTH;
+    int index = EVENT_HEADER_LENGTH;
 
-  memcpy(&tev.tableId, &event_buf[index], 6);
-  index += 6;
+    memcpy(&tev.tableId, &event_buf[index], 6);
+    index += 6;
 
-  index += 2; // flags
+    index += 2; // flags
 
-  int dbNameLen = (int)event_buf[index]; // single byte
-  index++;
-  tev.dbName = std::string((const char *)&event_buf[index], dbNameLen);
+    int dbNameLen = (int)event_buf[index]; // single byte
+    index++;
+    tev.dbName = std::string((const char *)&event_buf[index], dbNameLen);
   
-  index += (dbNameLen + 1); // null
-  int tbNameLen = (int)event_buf[index]; // single byte
-  index++;
-  tev.tableName = std::string((const char *)&event_buf[index], tbNameLen);
-  index += (tbNameLen + 1);
+    index += (dbNameLen + 1); // null
+    int tbNameLen = (int)event_buf[index]; // single byte
+    index++;
+    tev.tableName = std::string((const char *)&event_buf[index], tbNameLen);
+    index += (tbNameLen + 1);
 
-  string key = tev.dbName + "." + tev.tableName;
-  if (g_OnlineVectorIndexes.find(key) == g_OnlineVectorIndexes.end())
-    return; // we don't need to parse rest of the metadata
+    string key = tev.dbName + "." + tev.tableName;
+    if (g_OnlineVectorIndexes.find(key) == g_OnlineVectorIndexes.end())
+        return; /// we don't need to parse rest of the metadata
 
-  tev.nColumns = (unsigned int)event_buf[index]; // TODO - we support only <= 255 columns
-  index++;
+    tev.nColumns = (unsigned int)event_buf[index]; // TODO - we support only <= 255 columns
+    index++;
   
-  tev.columnTypes.insert(tev.columnTypes.end(), &event_buf[index],
-                         &event_buf[index + tev.nColumns]);
-  index += tev.nColumns;
-  unsigned int metadatalen = (unsigned int)event_buf[index];
-  index++;
+    tev.columnTypes.insert(tev.columnTypes.end(), &event_buf[index],
+                           &event_buf[index + tev.nColumns]);
+    index += tev.nColumns;
+    unsigned int metadatalen = (unsigned int)event_buf[index];
+    index++;
   
-  for (unsigned int i = 0; i < (unsigned int)tev.nColumns; i++) {
-    unsigned int md = 0;
-    switch(tev.columnTypes[i]) {
-      case MYSQL_TYPE_FLOAT:
-      case MYSQL_TYPE_DOUBLE:
-      case MYSQL_TYPE_BLOB:
-      case MYSQL_TYPE_JSON:
-      case MYSQL_TYPE_GEOMETRY:
-          md = (unsigned int)event_buf[index]; index++;
-          break;
-      case MYSQL_TYPE_BIT:
-      case MYSQL_TYPE_VARCHAR:
-      case MYSQL_TYPE_NEWDECIMAL:
-          memcpy(&md, &event_buf[index], 2); index+=2;
-          break;
-      case MYSQL_TYPE_SET:
-      case MYSQL_TYPE_ENUM:
-      case MYSQL_TYPE_STRING:
-          memcpy(&md, &event_buf[index], 2); index+=2;
-          break;
-      case MYSQL_TYPE_TIME2:
-      case MYSQL_TYPE_DATETIME2:
-      case MYSQL_TYPE_TIMESTAMP2:
-          md = (unsigned int)event_buf[index]; index++;
-          break;
-      default:
-          md = 0;
-     } // switch
-     tev.columnMetadata.push_back(md);
-   } // for
-   return;
+    for (unsigned int i = 0; i < (unsigned int)tev.nColumns; i++)
+    { 
+        unsigned int md = 0;
+        switch(tev.columnTypes[i])
+        {
+            case MYSQL_TYPE_FLOAT:
+            case MYSQL_TYPE_DOUBLE:
+            case MYSQL_TYPE_BLOB:
+            case MYSQL_TYPE_JSON:
+            case MYSQL_TYPE_GEOMETRY:
+                md = (unsigned int)event_buf[index]; index++;
+                break;
+            case MYSQL_TYPE_BIT:
+            case MYSQL_TYPE_VARCHAR:
+            case MYSQL_TYPE_NEWDECIMAL:
+                memcpy(&md, &event_buf[index], 2); index += 2;
+                break;
+            case MYSQL_TYPE_SET:
+            case MYSQL_TYPE_ENUM:
+            case MYSQL_TYPE_STRING:
+                memcpy(&md, &event_buf[index], 2); index += 2;
+                break;
+            case MYSQL_TYPE_TIME2:
+            case MYSQL_TYPE_DATETIME2:
+            case MYSQL_TYPE_TIMESTAMP2:
+                md = (unsigned int)event_buf[index]; index++;
+                break;
+            default:
+                md = 0;
+        } /// switch
+        tev.columnMetadata.push_back(md);
+    } /// for
+
+    return;
 }
 
 void parseRowsEvent(const unsigned char *event_buf, unsigned int event_len,
@@ -644,7 +643,11 @@ void myvector_binlog_loop(int id) {
   TableMapEvent tev;
   while (!mysql_binlog_fetch(&mysql,&rpl)) { 
 
+#if MYSQL_VERSION_ID >= 90100
+     mysql::binlog::event::Log_event_type type = (mysql::binlog::event::Log_event_type)rpl.buffer[1 + EVENT_TYPE_OFFSET;
+#else
      Log_event_type type      = (Log_event_type)rpl.buffer[1 + EVENT_TYPE_OFFSET];
+#endif
      unsigned long event_len  = rpl.size - 1;
      const unsigned char *event_buf = rpl.buffer + 1;
 
@@ -673,7 +676,7 @@ void myvector_binlog_loop(int id) {
        vector<VectorIndexUpdateItem *> updates;
        parseRowsEvent(event_buf, event_len, tev, idcolpos - 1, veccolpos - 1, updates);
        nrows += updates.size();
-       fprintf(stderr, "parseRowsEvent returned %u rows,  total = %lu\n", updates.size(), nrows);
+       fprintf(stderr, "parseRowsEvent returned %lu rows,  total = %lu\n", updates.size(), nrows);
        for (auto item : updates) {
          gqueue_.enqueue(item);
        }

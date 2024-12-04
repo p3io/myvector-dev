@@ -61,98 +61,90 @@ using namespace std;
  */
 class AbstractVectorIndex
 {
-  public:
-          virtual ~AbstractVectorIndex() {}
+public:
+    virtual ~AbstractVectorIndex() {}
 
-          virtual string getName() = 0;
+    virtual string getName() = 0;
 
-          virtual string getType() = 0;
+    virtual string getType() = 0;
 
-          virtual int         getDimension()
-          { return 0; }
+    virtual int         getDimension() { return 0; }
 
-          virtual bool        supportsIncrUpdates()
-          { return false; }
+    virtual bool        supportsIncrUpdates() { return false; }
 
-          virtual bool        supportsPersist()
-          { return false; }
+    virtual bool        supportsPersist() { return false; }
 
-          virtual bool        supportsConcurrentUpdates()
-          { return false; }
+    virtual bool        supportsConcurrentUpdates() { return false; }
 
-          virtual bool        supportsIncrRefresh()
-          { return false; }
+    virtual bool        supportsIncrRefresh() { return false; }
 
-          virtual bool        isReady()
-          { return false; }
+    virtual bool        isReady() { return false; }
 
-          virtual bool        isDirty()
-          { return false; }
+    virtual bool        isDirty() { return false; }
 
-          virtual string  getStatus()
-          { return getName() + "<Status>"; }
+    virtual string      getStatus() { return getName() + "<Status>"; }
 
-          virtual bool loadIndex(const string &path)  = 0;
+    virtual bool loadIndex(const string & path)  = 0;
 
-          virtual bool saveIndex(const string &path, const string &option = "")  = 0;
+    virtual bool saveIndex(const string & path, const string & option = "")  = 0;
           
-          virtual bool saveIndexIncr(const string &path, const string &option = "")  = 0;
+    virtual bool saveIndexIncr(const string & path, const string & option = "")  = 0;
           
-          virtual bool dropIndex(const string& path)  = 0;
+    virtual bool dropIndex(const string & path)  = 0;
 
-          virtual bool initIndex()                    = 0;
+    virtual bool initIndex()                     = 0;
 
-          virtual bool closeIndex()                   = 0;
+    virtual bool closeIndex()                    = 0;
 
-          /* searchVectorNN - search and return 'n' Nearest Neighbours */
-          virtual bool searchVectorNN(VectorPtr qvec, int dim,
-                          vector<KeyTypeInteger> &nnkeys,
-                          int n) = 0;
+    /* searchVectorNN - search and return 'n' Nearest Neighbours */
+    virtual bool searchVectorNN(VectorPtr qvec, int dim,
+                                vector<KeyTypeInteger> & nnkeys,
+                                int n) = 0;
 
-          /* insertVectortor - insert a vector into the index */
-          virtual bool insertVector(VectorPtr vec, int dim, KeyTypeInteger id) = 0;
+    /* insertVectortor - insert a vector into the index */
+    virtual bool insertVector(VectorPtr vec, int dim, KeyTypeInteger id) = 0;
 
-          /* startParallelBuild - User has initiated parallel index build/rebuild */
-          virtual bool startParallelBuild(int nthreads) = 0;
+    /* startParallelBuild - User has initiated parallel index build/rebuild */
+    virtual bool startParallelBuild(int nthreads) = 0;
 
-          /* setUpdateTs - timestamp when the last index build/refresh was started */
-          virtual void setUpdateTs(unsigned long ts) = 0;
+    /* setUpdateTs - timestamp when the last index build/refresh was started */
+    virtual void setUpdateTs(unsigned long ts) = 0;
 
-          /* getUpdateTs - get timestamp when the last index build/refresh was started */
-          virtual unsigned long getUpdateTs() = 0;
+    /* getUpdateTs - get timestamp when the last index build/refresh was started */
+    virtual unsigned long getUpdateTs() = 0;
 
-          /* getRowCount - get number of vectors present in the index */
-          virtual unsigned long getRowCount() = 0;
+    /* getRowCount - get number of vectors present in the index */
+    virtual unsigned long getRowCount() = 0;
           
-          virtual void getLastUpdateCoordinates(string &file, size_t &pos) {}
+    virtual void getLastUpdateCoordinates(string & /* file */, size_t & /* pos */) {}
 
-          virtual void setLastUpdateCoordinates(const string &file, const size_t &pos) {}
+    virtual void setLastUpdateCoordinates(const string & /* file */, const size_t & /* pos */) {}
 
-          void lockShared()      { m_mutex.lock_shared(); }
-          void lockExclusive()   { m_mutex.lock(); }
+    void lockShared()      { m_mutex.lock_shared(); }
+    void lockExclusive()   { m_mutex.lock(); }
 
-          void unlockShared()    { m_mutex.unlock_shared(); }
-          void unlockExclusive() { m_mutex.unlock(); }
+    void unlockShared()    { m_mutex.unlock_shared(); }
+    void unlockExclusive() { m_mutex.unlock(); }
 
-          shared_mutex& mutex()  { return m_mutex; }
-  private:
+    shared_mutex & mutex()  { return m_mutex; }
+private:
     mutable shared_mutex m_mutex;
 };
 
 class VectorIndexCollection
 {
-  public:
-    AbstractVectorIndex* open(const string& name,
-                              const string& options,
-                              const string& useraction);
+public:
+    AbstractVectorIndex* open(const string & name,
+                              const string & options,
+                              const string & useraction);
 
-    AbstractVectorIndex* get(const string &name);
+    AbstractVectorIndex* get(const string & name);
 
-    bool                 close(AbstractVectorIndex *hindex);
+    bool                 close(AbstractVectorIndex * hindex);
 
     string               FindEarliestBinlogFile();
 
-  private:
+private:
     unordered_map<string, AbstractVectorIndex*> m_indexes;
     mutex m_mutex;
 };

@@ -40,9 +40,9 @@ extern REQUIRES_SERVICE_PLACEHOLDER(mysql_string_factory);
 
 #include <mysql/service_plugin_registry.h>
 
-SERVICE_TYPE(registry) *h_registry = nullptr;
+SERVICE_TYPE(registry) * h_registry = nullptr;
 
-my_service<SERVICE_TYPE(mysql_udf_metadata)> *h_udf_metadata_service = nullptr;
+my_service<SERVICE_TYPE(mysql_udf_metadata)> * h_udf_metadata_service = nullptr;
 
 #include "my_inttypes.h"
 #include "my_thread.h" 
@@ -52,16 +52,18 @@ MYSQL_PLUGIN gplugin;
 
 void myvector_binlog_loop(int id);
 
+static std::thread *binlog_thread = nullptr;
 
-static int plugin_init(MYSQL_PLUGIN plugin_info) {
-  gplugin = plugin_info;
+static int plugin_init(MYSQL_PLUGIN plugin_info)
+{
+    gplugin = plugin_info;
 
-  h_registry              = mysql_plugin_registry_acquire();
-  h_udf_metadata_service  = new my_service<SERVICE_TYPE(mysql_udf_metadata)>(
+    h_registry              = mysql_plugin_registry_acquire();
+    h_udf_metadata_service  = new my_service<SERVICE_TYPE(mysql_udf_metadata)>(
                                   "mysql_udf_metadata", h_registry);
 
-  std::thread *binlog_thread = new std::thread(myvector_binlog_loop, 5);
-  return 0; /* success */
+    binlog_thread = new std::thread(myvector_binlog_loop, 5);
+    return 0; /* success */
 }
 
 /* Config variables of the MyVector plugin */
@@ -85,7 +87,7 @@ static MYSQL_SYSVAR_STR(
     "MyVector index files directory.",
     nullptr, nullptr, "/mysqldata");
 
-static SYS_VAR *myvector_system_variables[] = {
+static SYS_VAR * myvector_system_variables[] = {
     MYSQL_SYSVAR(feature_level), MYSQL_SYSVAR(index_bg_threads), MYSQL_SYSVAR(index_dir)};
 
 static int myvector_sql_preparse(MYSQL_THD, mysql_event_class_t event_class,
