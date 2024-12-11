@@ -644,7 +644,7 @@ void myvector_binlog_loop(int id) {
   while (!mysql_binlog_fetch(&mysql,&rpl)) { 
 
 #if MYSQL_VERSION_ID >= 90100
-     mysql::binlog::event::Log_event_type type = (mysql::binlog::event::Log_event_type)rpl.buffer[1 + EVENT_TYPE_OFFSET;
+     mysql::binlog::event::Log_event_type type = (mysql::binlog::event::Log_event_type)rpl.buffer[1 + EVENT_TYPE_OFFSET];
 #else
      Log_event_type type      = (Log_event_type)rpl.buffer[1 + EVENT_TYPE_OFFSET];
 #endif
