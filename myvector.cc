@@ -38,6 +38,7 @@
 
 #include "mysql.h" 
 #include "mysql/plugin.h"
+#include "mysql_version.h"
 #include "mysql/udf_registration_types.h"
 #include "plugin/myvector/myvector.h"
 #include "mysql/service_my_plugin_log.h"
@@ -1199,7 +1200,12 @@ bool rewriteMyVectorColumnDef(const string & query, string & newQuery)
         else
             varblength = MyVectorBVStorageLength(dim); // binary vector
 
-        string newColumn = "VARBINARY(" + to_string(varblength) + ") COMMENT 'MYVECTOR Column |" + colinfo + "'";
+        string newColumn = "";
+#if MYSQL_VERSION_ID >= 90000
+        newColumn = "VECTOR(" + to_string(dim) + ") COMMENT 'MYVECTOR Column |" + colinfo + "'";
+#else
+        newColumn = "VARBINARY(" + to_string(varblength) + ") COMMENT 'MYVECTOR Column |" + colinfo + "'";
+#endif
 
         if (addTrackingColumn)
         {
