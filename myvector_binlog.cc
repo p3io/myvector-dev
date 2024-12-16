@@ -34,6 +34,7 @@
 #include <utility>
 #include <regex>
 #include <condition_variable>
+#include <fstream>
 
 // #include <boost/lockfree/queue.hpp>
 #include "mysql_version.h"  // MYSQL_VERSION_ID
@@ -129,6 +130,12 @@ mutex binlog_stream_mutex_;
 map<string, VectorIndexColumnInfo> g_OnlineVectorIndexes;
 string currentBinlogFile = "";
 size_t currentBinlogPos  = 0;
+
+string myvector_conn_user_id;
+string myvector_conn_password;
+string myvector_conn_socket;
+string myvector_conn_host;
+string myvector_conn_port;
 
 #define EVENT_HEADER_LENGTH 19
 
@@ -321,6 +328,33 @@ void parseRotateEvent(const unsigned char *event_buf, unsigned int event_len,
 
 }
 
+void readConfigFile(const char *config_file)
+{
+    if (!config_file || !strlen(config_file))
+        return;
+
+    std::ifstream file(config_file);
+    std::string line, info;
+
+    while (std::getline(file, line))
+    {
+        if (line.length() && line[0] == '#')
+            continue;
+
+        if (info.length())
+            info += ",";
+        info += line;
+    }
+
+    MyVectorOptions vo(info);
+
+    myvector_conn_user_id = vo.getOption("myvector_user_id");
+    myvector_conn_password = vo.getOption("myvector_user_password");
+    myvector_conn_socket = vo.getOption("myvector_socket");
+    myvector_conn_host = vo.getOption("myvector_host");
+    myvector_conn_port = vo.getOption("myvector_port");
+}
+
 /* GetBaseTableColumnPositions() - Get the column ordinal positions of the
  * "id" column and the "vector" column. e.g :-
  * CREATE TABLE books
@@ -478,7 +512,9 @@ void BuildMyVectorIndexSQL(const char *db, const char *table, const char *idcol,
   /* Use a new connection for vector index */
   mysql_init(&mysql);
 
-  if (!mysql_real_connect(&mysql, "localhost",  "root", NULL, NULL, 0, "/tmp/mysql.sock", CLIENT_IGNORE_SIGPIPE))
+  if (!mysql_real_connect(&mysql, myvector_conn_host.c_str(), myvector_conn_user_id.c_str(), myvector_conn_password.c_str(),
+                          NULL, (myvector_conn_port.length() ? atoi(myvector_conn_port.c_str()) : 0), myvector_conn_socket.c_str(),
+                          CLIENT_IGNORE_SIGPIPE))
   {
     snprintf(errorbuf, MYVECTOR_BUFF_SIZE, "Error in new connection to build vector index : %s.",
              mysql_error(&mysql));
@@ -591,23 +627,35 @@ void myvector_binlog_loop(int id) {
   
   int ret;
 
+  int connect_attempts = 0;
+
   if (myvector_feature_level & 1) {
     fprintf(stderr, "Binlog event thread is disabled!\n");
     return;
   }
+
+  readConfigFile(myvector_config_file);
 
   /* wait till mysql is open to access */
   while (1) {
 
     mysql_init(&mysql);
 
-    if (!mysql_real_connect(&mysql, "localhost",  "root", NULL, NULL, 0, "/tmp/mysql.sock", 0))
+    if (!mysql_real_connect(&mysql, myvector_conn_host.c_str(), myvector_conn_user_id.c_str(), myvector_conn_password.c_str(),
+                            NULL, (myvector_conn_port.length() ? atoi(myvector_conn_port.c_str()) : 0), myvector_conn_socket.c_str(),
+                            CLIENT_IGNORE_SIGPIPE))
     {
-       fprintf(stderr, "real connect failed %s\n", mysql_error(&mysql));
+       /// fprintf(stderr, "real connect failed %s\n", mysql_error(&mysql));
        sleep(1);
+       connect_attempts++;
+       if (connect_attempts > 600)
+       {
+            fprintf(stderr, "MyVector binlog thread failed to connect (%s)\n", mysql_error(&mysql));
+            return;
+       }
        continue;
     }
-    break;
+    break; /// connected
   }
 
   

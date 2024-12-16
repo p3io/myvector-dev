@@ -70,6 +70,7 @@ static int plugin_init(MYSQL_PLUGIN plugin_info)
 long myvector_feature_level;
 long myvector_index_bg_threads;
 char *myvector_index_dir;
+char *myvector_config_file;
 
 static MYSQL_SYSVAR_LONG(
     feature_level, myvector_feature_level, PLUGIN_VAR_RQCMDARG,
@@ -87,8 +88,14 @@ static MYSQL_SYSVAR_STR(
     "MyVector index files directory.",
     nullptr, nullptr, "/mysqldata");
 
+static MYSQL_SYSVAR_STR(
+    config_file, myvector_config_file,
+    PLUGIN_VAR_RQCMDARG | PLUGIN_VAR_MEMALLOC,
+    "MyVector config file.",
+    nullptr, nullptr, "myvector.cnf");
+
 static SYS_VAR * myvector_system_variables[] = {
-    MYSQL_SYSVAR(feature_level), MYSQL_SYSVAR(index_bg_threads), MYSQL_SYSVAR(index_dir)};
+    MYSQL_SYSVAR(feature_level), MYSQL_SYSVAR(index_bg_threads), MYSQL_SYSVAR(index_dir), MYSQL_SYSVAR(config_file), nullptr};
 
 static int myvector_sql_preparse(MYSQL_THD, mysql_event_class_t event_class,
                        const void *event) {

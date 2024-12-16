@@ -153,5 +153,6 @@ private:
 
 extern long myvector_index_bg_threads;
 extern long myvector_feature_level;
+extern char* myvector_config_file;
 
 #endif  // PLUGIN_MYVECTOR_H
