@@ -143,7 +143,6 @@ char *latin1 = const_cast<char *>("latin1");
 
 const set<string> MYVECTOR_INDEX_TYPES{"KNN", "HNSW", "HNSW_BV"};
 
-
 inline bool isValidIndexType(const string & indextype) 
 {
     return (MYVECTOR_INDEX_TYPES.find(indextype) !=
@@ -222,7 +221,6 @@ double computeCosineDistance(const FP32 * __restrict v1, const FP32 * __restrict
 
     return (1 - dist);
 }
-static int fdebug = 0;
 
 /* HammingDistanceFn - Calculate Hamming distance between 2 bit vectors. Prototype is in HNSWLIB style */
 float HammingDistanceFn(const void * __restrict pVect1, const void * __restrict pVect2, const void * __restrict qty_ptr)
@@ -230,8 +228,8 @@ float HammingDistanceFn(const void * __restrict pVect1, const void * __restrict 
     size_t qty = *((size_t*)qty_ptr); /// dimension of the vector
     float dist = 0;
     unsigned long ldist = 0;
-    unsigned long* a = (unsigned long*)pVect1;
-    unsigned long* b = (unsigned long*)pVect2;
+    unsigned long * a = (unsigned long *)pVect1;
+    unsigned long * b = (unsigned long *)pVect2;
 
     /* Hamming Distance between 2 byte sequences - Number of bit positions
      * matching/different in both the sequences. In the plugin, we calculate
@@ -267,21 +265,25 @@ class HammingBinaryVectorSpace : public hnswlib::SpaceInterface<float> {
 
 public:
 
-    HammingBinaryVectorSpace(size_t dim) {
+    HammingBinaryVectorSpace(size_t dim)
+    {
         fstdistfunc_ = HammingDistanceFn;
         dim_         = dim;
-        data_size_   = (dim / BITS_PER_BYTE); // 1 bit per dimension
+        data_size_   = (dim / BITS_PER_BYTE); /// 1 bit per dimension
     }
 
-    size_t get_data_size() {
+    size_t get_data_size()
+    {
         return data_size_;
     }
 
-    hnswlib::DISTFUNC<float> get_dist_func() {
+    hnswlib::DISTFUNC<float> get_dist_func()
+    {
         return fstdistfunc_;
     }
 
-    void *get_dist_func_param() {
+    void * get_dist_func_param()
+    {
         return &dim_;
     }
 
@@ -301,7 +303,7 @@ public:
 
     ~KNNIndex() { }
 
-    /* Next 3 methods are no-op in the KNN in-memory index */
+    /* Next 4 methods are no-op in the KNN in-memory index */
     bool saveIndex(const string & path, const string & option = "");
           
     bool saveIndexIncr(const string & path, const string & option = "");
@@ -349,6 +351,8 @@ private:
     int             m_dim;
     unsigned long   m_updateTs;
     MyVectorOptions m_optionsMap;
+    
+    mutable std::shared_mutex search_insert_mutex_;
 
     atomic<unsigned long>    m_n_rows{0};
     atomic<unsigned long>    m_n_searches{0};
@@ -379,6 +383,8 @@ KNNIndex::KNNIndex(const string & name, const string & options)
  */
 bool KNNIndex::searchVectorNN(VectorPtr qvec, int dim, vector<KeyTypeInteger> & keys, int n)
 {
+    std::shared_lock lock(search_insert_mutex_);
+
     priority_queue< pair<FP32, KeyTypeInteger> > pq;
     keys.clear();
 
@@ -407,7 +413,7 @@ bool KNNIndex::searchVectorNN(VectorPtr qvec, int dim, vector<KeyTypeInteger> & 
         keys.push_back(r.second);
     }
 
-    reverse(keys.begin(), keys.end()); // nearest to farthest
+    reverse(keys.begin(), keys.end()); /// nearest to farthest
 
     m_n_searches++;
     return true;
@@ -416,9 +422,11 @@ bool KNNIndex::searchVectorNN(VectorPtr qvec, int dim, vector<KeyTypeInteger> & 
 /* insertVector - just stash the vector into in-memory vector<> collection */
 bool KNNIndex::insertVector(VectorPtr vec, int dim, KeyTypeInteger id)
 {
+    std::unique_lock lock(search_insert_mutex_);
+
     FP32 *fvec = static_cast<FP32 *>(vec);
     vector<FP32> row(fvec, fvec + dim);
-    m_vectors.push_back({row, id}); /// simple index - multithread unsafe
+    m_vectors.push_back({row, id}); /// simple index - multithread safe
 
     m_n_rows++;
   
@@ -517,9 +525,6 @@ public:
     bool startParallelBuild(int nthreads);
     
     virtual hnswlib::SpaceInterface<float> * getSpace(size_t dim);
-
-    virtual void setAlgHnsw(hnswlib::SpaceInterface<float> *sp,
-                            hnswlib::AlgorithmInterface<FP32> *ha);
 
     int getEfConstruction() { return m_ef_construction; }
     int getM()              { return m_M; }
@@ -923,88 +928,6 @@ bool HNSWMemoryIndex::insertVector(VectorPtr vec, int dim, KeyTypeInteger id) {
   return true;
 }
 
-void HNSWMemoryIndex::setAlgHnsw(hnswlib::SpaceInterface<FP32> *sp,
-                                 hnswlib::AlgorithmInterface<FP32> *ha)
-{
-  if (m_alg_hnsw) delete m_alg_hnsw;
-  if (m_space)    delete m_space;
-
-  debug_print("in setAlgHnsw");
-
-  m_space    = sp;
-  m_alg_hnsw = ha;
-}
-
-#ifdef EXPERIMENTAL
-class HNSWMemoryDiskIndex : public HNSWMemoryIndex
-{
-  public:
-          HNSWMemoryDiskIndex(const string &name, const string &options);
-
-          ~HNSWMemoryDiskIndex();
-
-          // virtual methods re-implemented
-
-          bool saveIndex(const string &path);
-
-          bool loadIndex(const string &path);
-
-          bool dropIndex(const string &path);
-
-          bool initIndex();
-
-          bool closeIndex();
-  private:
-    hnswlib::HierarchicalDiskNSW<FP32> *m_alg_hnswdisk;
-};
-
-HNSWMemoryDiskIndex::HNSWMemoryDiskIndex(const string &name,
-                                         const string &options)
-   : HNSWMemoryIndex(name, options)
-{
-}
-
-HNSWMemoryDiskIndex::~HNSWMemoryDiskIndex() {
-}
-
-bool HNSWMemoryDiskIndex::initIndex() {
-  // debug_print("hnsw disk initIndexO %p %s %d %d %d %d %d", this, m_name.c_str(), m_dim,
-  //             m_size, m_ef_construction, m_ef_search, m_M);
-  hnswlib::SpaceInterface<float> *tspace    = getSpace(getDimension());
-
-  m_alg_hnswdisk =
-    new hnswlib::HierarchicalDiskNSW<FP32>(tspace, getSize() , getM(), getEfConstruction());
-
-
-  // talghnsw->setEf(m_ef_search);
-
-  // m_n_rows = 0;
-  // m_n_searches = 0;
-
-  setAlgHnsw(tspace, m_alg_hnswdisk);
-
-  return true;
-}
-
-bool HNSWMemoryDiskIndex::saveIndex(const string &path) {
-  string filename = path + "/" + getName() + ".hnsw";
-  m_alg_hnswdisk->doCheckPoint(filename, "ckpt1live");
-}
-
-bool HNSWMemoryDiskIndex::loadIndex(const string &path) {
-   // perform recovery and load index
-   initIndex();
-}
-
-bool HNSWMemoryDiskIndex::dropIndex(const string &path) {
-  return true;
-}
-
-bool HNSWMemoryDiskIndex::closeIndex() {
-  return true;
-}
-#endif
-
 
 class SharedLockGuard {
   public:
@@ -1114,7 +1037,8 @@ const string MYVECTOR_SEARCH_USAGE = "MYVECTOR_SEARCH(baseTable,idColumn,vectorC
 const size_t MYVECTOR_MAX_COLUMN_INFO_LEN = 128;
 
 /* For v1, let us restrict to 4096. OpenAI has 3072 dimension embeddings
- * now in model :  text-embedding-3-large.
+ * now in model :  text-embedding-3-large. Technically, there is no limitation
+ * in the VARBINARY datatype. MySQL's VECTOR datatype supports max of 16383.
  */
 const size_t MYVECTOR_MAX_VECTOR_DIM      = 4096;
 
@@ -1229,7 +1153,7 @@ bool rewriteMyVectorIsANN(const string & query, string & newQuery)
     while ((pos = newQuery.find(MYVECTOR_IS_ANN_A)) != string::npos)
     {
         size_t spos = pos + MYVECTOR_IS_ANN_A.length();
-        size_t epos = spos+1;
+        size_t epos = spos + 1;
         int ob = 1;
         /* We can have nested () in MYVECTOR_IS_ANN
          * e.g MYVECTOR_IS_ANN(a,b,myvector_construct(...))
@@ -1250,6 +1174,7 @@ bool rewriteMyVectorIsANN(const string & query, string & newQuery)
             error = true;
             break;
         }
+
         string strparams = newQuery.substr(spos, (epos - spos));
      
         vector<string> annparams;
@@ -1347,60 +1272,66 @@ bool rewriteMyVectorSearch(const string & query, string & newQuery)
                    ss.str() +
                    newQuery.substr(epos + delim.length());
     }
-    debug_print("MYVECTOR_SEARCH query rewrite=\n%s.", newQuery.c_str());
 
    return error;
 }
 
-/* myvector_query_rewriter() - Entrypoint of pre-parse query rewrite by this
+/* myvector_query_rewrite() - Entrypoint of pre-parse query rewrite by this
  * plugin. This routine looks for CREATE TABLE, ALTER TABLE, SELECT and 
  * EXPLAIN and presence of MYVECTOR and proceeds to perform  the query
  * transformation.
  */
-bool myvector_query_rewrite(const string &query, string *rewritten_query) {
+bool myvector_query_rewrite(const string & query, string * rewritten_query)
+{
 
-  /* Check if SQL is CREATE/ALTER/SELECT/EXPLAIN */
-  if (query.length() == 0 || !strchr("CcAaSsEe", query[0])) return false;
+    /* Check if SQL is CREATE/ALTER/SELECT/EXPLAIN */
+    if (query.length() == 0 || !strchr("CcAaSsEe", query[0])) return false;
 
-  /* quick top-level check and exit if no MYVECTOR* pattern found in query */
-  if (!strstr(query.c_str(), "MYVECTOR")) return false;
+    /* quick top-level check and exit if no MYVECTOR* pattern found in query */
+    if (!strstr(query.c_str(), "MYVECTOR")) return false;
 
-  static const regex create_table("^CREATE\\s+TABLE",
-                                regex::icase | regex::nosubs);
-  static const regex altert_table("^ALTER\\s+TABLE",
-                                regex::icase | regex::nosubs);
-  static const regex select_stmt("^SELECT\\s+",
-                                regex::icase | regex::nosubs);
-  static const regex explain_stmt("^EXPLAIN\\s+",
-                                regex::icase | regex::nosubs);
-  
+    static const regex create_table("^CREATE\\s+TABLE",
+                                    regex::icase | regex::nosubs);
+    static const regex alter_table("^ALTER\\s+TABLE",
+                                    regex::icase | regex::nosubs);
+    static const regex select_stmt("^SELECT\\s+",
+                                    regex::icase | regex::nosubs);
+    static const regex explain_stmt("^EXPLAIN\\s+",
+                                    regex::icase | regex::nosubs);
 
-  string newQuery = "";
-  *rewritten_query = query;
+    string newQuery = "";
+    *rewritten_query = query;
 
-  if ((regex_search(query, select_stmt) || regex_search(query, explain_stmt))) {
-    if (strstr(query.c_str(), MYVECTOR_IS_ANN_A.c_str())) {
-      if (rewriteMyVectorIsANN(query, newQuery)) {
-         newQuery = "";
-       }
+    if ((regex_search(query, select_stmt) || regex_search(query, explain_stmt)))
+    {
+        if (strstr(query.c_str(), MYVECTOR_IS_ANN_A.c_str()))
+        {
+            if (rewriteMyVectorIsANN(query, newQuery))
+            {
+                newQuery = "";
+            }
+        }
+        else if (strstr(query.c_str(), MYVECTOR_SEARCH_A.c_str()))
+        {
+            if (rewriteMyVectorSearch(query, newQuery))
+            {
+                newQuery = "";
+            }
+        }
     }
-    else if (strstr(query.c_str(), MYVECTOR_SEARCH_A.c_str())) {
-      if (rewriteMyVectorSearch(query, newQuery)) {
-         newQuery = "";
-      }
+    else if ((regex_search(query, create_table) || regex_search(query, alter_table))
+              && (strstr(query.c_str(), MYVECTOR_COLUMN_A.c_str())))
+    {
+        if (rewriteMyVectorColumnDef(query, newQuery))
+        {
+            newQuery = "";
+        }
     }
-  }
-  else if ((regex_search(query, create_table) || regex_search(query, altert_table))
-        && (strstr(query.c_str(), MYVECTOR_COLUMN_A.c_str()))) {
-      if (rewriteMyVectorColumnDef(query, newQuery)) {
-        newQuery = "";
-      }
-  }
 
-  if (newQuery.length())
-    *rewritten_query = newQuery;
+    if (newQuery.length())
+        *rewritten_query = newQuery;
 
-  return (*rewritten_query != query);
+    return (*rewritten_query != query);
 }
 
 extern "C" bool myvector_ann_set_init(UDF_INIT *initid, UDF_ARGS *args, char *message)
