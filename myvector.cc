@@ -1711,7 +1711,7 @@ extern "C" char *myvector_display(UDF_INIT *initid, UDF_ARGS *args, char *result
   ostr << "[";
   ostr << setprecision(precision);
   for (int i = 0 ; i < dim; i++) {
-    if (i) ostr << " ";
+    if (i) ostr << ", ";
     if (fvec) {
       ostr << *fvec;
       fvec++;
