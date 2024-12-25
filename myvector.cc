@@ -143,6 +143,8 @@ char *latin1 = const_cast<char *>("latin1");
 
 const set<string> MYVECTOR_INDEX_TYPES{"KNN", "HNSW", "HNSW_BV"};
 
+thread_local unordered_map<KeyTypeInteger, double> * tls_distances = nullptr; /// experimental
+
 inline bool isValidIndexType(const string & indextype) 
 {
     return (MYVECTOR_INDEX_TYPES.find(indextype) !=
@@ -319,6 +321,8 @@ public:
     string getName() { return m_name; }
     string getType() { return "KNN"; }
 
+    string getStatus();
+
     bool searchVectorNN(VectorPtr qvec, int dim,
                         vector<KeyTypeInteger> & keys, int n);
     bool insertVector(VectorPtr vec, int dim, KeyTypeInteger id);
@@ -376,6 +380,10 @@ KNNIndex::KNNIndex(const string & name, const string & options)
         else if (m_optionsMap.getOption("dist") == "IP")
             m_distfn = computeIPDistance;
     }
+    else
+    {
+        m_optionsMap.setOption("dist", "L2");
+    }
 }
 
 /* Brute-force, exact search KNN implemented using in-memory vector<> and
@@ -388,11 +396,12 @@ bool KNNIndex::searchVectorNN(VectorPtr qvec, int dim, vector<KeyTypeInteger> & 
     priority_queue< pair<FP32, KeyTypeInteger> > pq;
     keys.clear();
 
+
     /* Use priority queue to find out 'n' neighbours with least distance */
     for (auto row : m_vectors)
     {
         vector<FP32> & a = row.first;
-        double dist = m_distfn((FP32 *)qvec, a.data(), dim);
+        double dist = m_distfn((FP32 *)qvec, a.data(), m_dim);
 
         if (pq.size() < n)
             pq.push({dist, row.second});
@@ -411,6 +420,7 @@ bool KNNIndex::searchVectorNN(VectorPtr qvec, int dim, vector<KeyTypeInteger> & 
     {
         auto r = pq.top(); pq.pop();
         keys.push_back(r.second);
+        (*tls_distances)[r.second] = r.first; /// pkid -> distance
     }
 
     reverse(keys.begin(), keys.end()); /// nearest to farthest
@@ -425,7 +435,7 @@ bool KNNIndex::insertVector(VectorPtr vec, int dim, KeyTypeInteger id)
     std::unique_lock lock(search_insert_mutex_);
 
     FP32 *fvec = static_cast<FP32 *>(vec);
-    vector<FP32> row(fvec, fvec + dim);
+    vector<FP32> row(fvec, fvec + m_dim);
     m_vectors.push_back({row, id}); /// simple index - multithread safe
 
     m_n_rows++;
@@ -481,6 +491,20 @@ bool KNNIndex::closeIndex()
     return true;
 }
 
+string KNNIndex::getStatus()
+{
+    std::stringstream ss;
+
+    ss << endl;
+    ss << "Vector Index : " << m_name << endl;
+    ss << "Type : KNN" << endl;
+    ss << "Dimension : " << m_dim << endl;
+    ss << "Distance : " << m_optionsMap.getOption("dist") << endl;
+    ss << "Rows Inserted : " << m_n_rows << endl;
+    ss << "Searches : " << m_n_searches << endl;
+
+    return ss.str();
+}
 
 class HNSWMemoryIndex : public AbstractVectorIndex
 {
@@ -785,7 +809,6 @@ hnswlib::SpaceInterface<float>* HNSWMemoryIndex::getSpace(size_t dim)
     return nullptr;
 }
 
-thread_local unordered_map<KeyTypeInteger, double> * tls_distances = nullptr; /// experimental
 
 bool HNSWMemoryIndex::searchVectorNN(VectorPtr qvec, int dim, vector<KeyTypeInteger> & keys, int n)
 {
@@ -1886,6 +1909,11 @@ void myvector_open_index_impl(char *vecid, char *details, char *pkidcol,
 
     if (!strcmp(action, "save")) {
       vi->saveIndex(myvector_index_dir);
+    }
+    else if (!strcmp(action, "status"))
+    {
+        string s = vi->getStatus();
+        strcpy(result, s.c_str());
     }
     else if (!strcmp(action, "drop")) {
       vi->dropIndex(myvector_index_dir);
