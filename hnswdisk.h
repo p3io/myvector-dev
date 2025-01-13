@@ -126,16 +126,16 @@ class HierarchicalDiskNSW : public AlgorithmInterface<dist_t> {
         level_generator_.seed(random_seed);
         update_probability_generator_.seed(random_seed + 1);
 
-        std::cout << "Ms = " << M_ << "," << maxM_ << "," << maxM0_ << std::endl;
+        /// std::cout << "Ms = " << M_ << "," << maxM_ << "," << maxM0_ << std::endl;
 
         size_links_level0_ = maxM0_ * sizeof(tableint) + sizeof(linklistsizeint);
         size_data_per_element_ = size_links_level0_ + data_size_ + sizeof(labeltype);
-        std::cout << "size_links_level0 = " << size_links_level0_ << std::endl;
-        std::cout << "data_size_ = " << data_size_ << ",label size = " << sizeof(labeltype) << std::endl;
-        std::cout << "size_data_per_element = " << size_data_per_element_ << std::endl;
+        /// std::cout << "size_links_level0 = " << size_links_level0_ << std::endl;
+        /// std::cout << "data_size_ = " << data_size_ << ",label size = " << sizeof(labeltype) << std::endl;
+        /// std::cout << "size_data_per_element = " << size_data_per_element_ << std::endl;
         offsetData_ = size_links_level0_;
         label_offset_ = size_links_level0_ + data_size_;
-        std::cout << "offsetData_ " << offsetData_ << ", label_offset_ = " << label_offset_ << std::endl;
+        /// std::cout << "offsetData_ " << offsetData_ << ", label_offset_ = " << label_offset_ << std::endl;
         offsetLevel0_ = 0;
 
         data_level0_memory_ = (char *) malloc(max_elements_ * size_data_per_element_);
@@ -154,9 +154,9 @@ class HierarchicalDiskNSW : public AlgorithmInterface<dist_t> {
         if (linkLists_ == nullptr)
             throw std::runtime_error("Not enough memory: HierarchicalDiskNSW failed to allocate linklists");
         size_links_per_element_ = maxM_ * sizeof(tableint) + sizeof(linklistsizeint);
-        std::cout << "size_links_per_element_ = " << size_links_per_element_ << std::endl;
+        /// std::cout << "size_links_per_element_ = " << size_links_per_element_ << std::endl;
         mult_ = 1 / log(1.0 * M_);
-        std::cout << "mult_ = " << mult_ << std::endl;
+        /// std::cout << "mult_ = " << mult_ << std::endl;
         revSize_ = 1.0 / mult_;
     }
 

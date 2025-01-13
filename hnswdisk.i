@@ -391,8 +391,8 @@
     s = mx_nodeLinksLevelGt0Updates.size();
     Write(ckptFile, &s, sizeof(s), ckptFileName, __LINE__);
 
-    std::cout << "Flush List sizes = " << mx_nodeUpdates.size() << ","
-              << mx_nodeLinksLevel0Updates.size() << "," << mx_nodeLinksLevelGt0Updates.size() << std::endl;
+    debug_print("Flush List Sizes (%lu) (%lu) (%lu).", mx_nodeUpdates.size(),
+                mx_nodeLinksLevel0Updates.size(), mx_nodeLinksLevelGt0Updates.size());
 
     // Sort the flush lists in NodeID order - already done in ordered_set<>
 
@@ -405,11 +405,11 @@
         Write(ckptFile, nodeVectorAndLevel0Links, size_data_per_element_,
               ckptFileName, __LINE__);
 
-	unsigned int linkListSizeLevelGt0 =
-	  element_levels_[nodeId] > 0 ? size_links_per_element_ * element_levels_[nodeId] : 0;
+        unsigned int linkListSizeLevelGt0 =
+          element_levels_[nodeId] > 0 ? size_links_per_element_ * element_levels_[nodeId] : 0;
         Write(ckptFile, &linkListSizeLevelGt0, sizeof(linkListSizeLevelGt0),
               ckptFileName, __LINE__);
-	if (linkListSizeLevelGt0) {
+        if (linkListSizeLevelGt0) {
           Write(ckptFile, linkLists_[nodeId], linkListSizeLevelGt0,
                 ckptFileName, __LINE__);
         }
@@ -463,12 +463,11 @@
         size_t ofs = (nodeVectorAndLevel0Links - data_level0_memory_) + HNSW_FILE_METADATA_SIZE;
         Lseek(hnswFile, ofs, SEEK_SET, hnswFileName);
 
-        std::cout << "Writing new node " << nodeId << " to offset = " << ofs << std::endl;
         Write(hnswFile, nodeVectorAndLevel0Links, size_data_per_element_,
               hnswFileName, __LINE__);
 
-	unsigned int linkListSizeLevelGt0 =
-	  element_levels_[nodeId] > 0 ? size_links_per_element_ * element_levels_[nodeId] : 0;
+        unsigned int linkListSizeLevelGt0 =
+          element_levels_[nodeId] > 0 ? size_links_per_element_ * element_levels_[nodeId] : 0;
         if (linkListSizeLevelGt0)
            mx_nodeLinksLevelGt0Updates.insert(nodeId); // defer pattern!
     } // full node - vector data, level 0 links and higher level links
@@ -507,7 +506,7 @@
                     linksLocation, __LINE__);
               Write(linksDirOutput, &linkListSize, sizeof(linkListSize), 
                     linksLocation, __LINE__);
-              std::cout << "Flushing new gt0 node " << nodeId << std::endl;
+              debug_print("Flushing new gt0 node %lu.", nodeId);
             }
             else {
               datafileOfs = m_linksOffsetsInFile[nodeId];
@@ -518,8 +517,8 @@
             {
                Lseek(linksDataOutput, 0, SEEK_END, linksDataLocation);
                m_linksOffsetsInFile[nodeId] = Lseek(linksDataOutput, 0, SEEK_CUR, linksDataLocation);
-               std::cout << "Writing Gt0 links of node " << nodeId << ", size = " << linkListSize << " at "
-                         << m_linksOffsetsInFile[nodeId] << std::endl;
+               debug_print("Writing Gt0 links of node %lu, size %lu, file offset %lu.",
+                           nodeId, linkListSize, m_linksOffsetsInFile[nodeId]);
             }
             Write(linksDataOutput, linkLists_[nodeId], linkListSize, linksDataLocation, __LINE__);
         }
@@ -823,7 +822,7 @@
             unsigned int linkListSize = element_levels_[i] > 0 ? 
               (size_links_per_element_ * element_levels_[i]) : 0;
             if (linkListSize)
-              std::cout << "Writing links of size " << linkListSize << " for node " << i << std::endl;
+              debug_print("Writing links of size %u for node %lu.", linkListSize, i);
             if (linkListSize) {
               unsigned int nodeID = i;
               Write(gt0LinksF, &nodeID, sizeof(nodeID), linksLocation, __LINE__);
@@ -951,8 +950,6 @@
 
             if (!inputLinksDir.good() || !linkListSize)
               break;
-
-            // std::cout << "Found level1+ links for node : " << nodeID << ",size = " << linkListSize << std::endl;
 
             element_levels_[nodeID] = linkListSize / size_links_per_element_;
             linkLists_[nodeID] = (char *) malloc(linkListSize);

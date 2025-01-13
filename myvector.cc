@@ -271,7 +271,7 @@ public:
     {
         fstdistfunc_ = HammingDistanceFn;
         dim_         = dim;
-        data_size_   = (dim / BITS_PER_BYTE); /// 1 bit per dimension
+        data_size_   = (dim / BITS_PER_BYTE); /// 1 bit per dimension - assumes dim is multiple of 8
     }
 
     size_t get_data_size()
@@ -532,6 +532,8 @@ public:
     string getName() { return m_name; }
 
     string getType() { return m_type; }
+    
+    string getStatus();
 
     bool searchVectorNN(VectorPtr qvec, int dim, vector<KeyTypeInteger> & keys, int n);
           
@@ -807,6 +809,28 @@ hnswlib::SpaceInterface<float>* HNSWMemoryIndex::getSpace(size_t dim)
         return new HammingBinaryVectorSpace(m_dim);
 
     return nullptr;
+}
+
+string HNSWMemoryIndex::getStatus()
+{
+    std::stringstream ss;
+
+    ss << endl;
+    ss << "Vector Index : " << m_name << endl;
+    ss << "Type : " << m_type << endl;
+    ss << "Dimension : " << m_dim << endl;
+    ss << "Distance : " << m_optionsMap.getOption("dist") << endl;
+    ss << "Max. Capacity : " << m_size << endl;
+    ss << "M = " << m_M << endl;
+
+    if (m_alg_hnsw)
+    {
+        ss << "Element Data Size : " << (dynamic_cast<hnswlib::HierarchicalDiskNSW<FP32>*>(m_alg_hnsw))->size_data_per_element_ << endl;
+        ss << "Current Rows : " << (dynamic_cast<hnswlib::HierarchicalDiskNSW<FP32>*>(m_alg_hnsw))->cur_element_count << endl;
+        ss << "Searches : " << m_n_searches << endl;
+    }
+
+    return ss.str();
 }
 
 
@@ -1548,9 +1572,15 @@ char *myvector_construct_bv(const std::string &srctype, char *src, char *dst,
 
 
 extern "C" bool myvector_construct_init(UDF_INIT *initid, UDF_ARGS *args, char *message) {
-        initid->max_length = MYVECTOR_CONSTRUCT_MAX_LEN;
-        initid->ptr = (char *)malloc(MYVECTOR_CONSTRUCT_MAX_LEN);
-        return false;
+    if (args->arg_count < 1 || args->arg_count > 2)
+    {
+        strcpy(message, "Incorrect arguments, usage : "
+               "myvector_construct(vector_string [, input_format])");
+        return true; // error
+    }
+    initid->max_length = MYVECTOR_CONSTRUCT_MAX_LEN;
+    initid->ptr = (char *)malloc(MYVECTOR_CONSTRUCT_MAX_LEN);
+    return false;
 
 }
 
