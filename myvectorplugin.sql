@@ -135,15 +135,14 @@ END
 //
 
 CREATE PROCEDURE MYVECTOR_INDEX_REFRESH(
-	IN myvectorcolumn VARCHAR(256))
+	IN myvectorcolumn VARCHAR(256),
+	IN pkidcolumn     VARCHAR(64))
 BEGIN
         DECLARE extra   VARCHAR(1024);
-        DECLARE pkid    VARCHAR(1024);
 
         SET extra = '';
-        SET pkid  = '';
         
-        CALL MYVECTOR_INDEX_INTERNAL(myvectorcolumn, pkid, 'refresh', extra);
+        CALL MYVECTOR_INDEX_INTERNAL(myvectorcolumn, pkidcolumn, 'refresh', extra);
 END
 //
 
@@ -186,6 +185,10 @@ BEGIN
 
 	IF LOCATE("MYVECTOR COLUMN", colinfo) <> 1 THEN
 	  SIGNAL SQLSTATE '50002' SET MESSAGE_TEXT = 'Column is not a MYVECTOR column', MYSQL_ERRNO = 50002;
+	END IF;
+
+	IF action = "REFRESH" AND LOCATE("track=", colinfo) <> 1 THEN
+	  SIGNAL SQLSTATE '50003' SET MESSAGE_TEXT = 'MyVector Tracking timestamp column not found for incremental refresh', MYSQL_ERRNO = 50003;
 	END IF;
 
         -- Call UDF to open/build/load index
