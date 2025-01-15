@@ -117,9 +117,13 @@ static const unsigned int MYVECTOR_DISPLAY_MAX_LEN   = 128000;
 static const unsigned int MYVECTOR_DISPLAY_DEF_PREC  = 7;
 
 /* Overhead per MYVECTOR column value - 4 bytes for checksum and
-   4 bytes for metadata
+   4 bytes for metadata. Overhead disabled if we are using MySQL's VECTOR
  */ 
+#if MYSQL_VERSION_ID >= 90000
+static const unsigned int MYVECTOR_COLUMN_EXTRA_LEN  = 0;
+#else
 static const unsigned int MYVECTOR_COLUMN_EXTRA_LEN  = 8;
+#endif
 
 /* Default number of neighbours to return by myvector_ann_set() */
 static const unsigned int MYVECTOR_DEFAULT_ANN_RETURN_COUNT = 10;
@@ -1558,6 +1562,7 @@ char *myvector_construct_bv(const std::string &srctype, char *src, char *dst,
   } // else
 
 
+#if MYSQL_VERSION_ID < 90000
   unsigned int metadata = MYVECTOR_V1_BV_METADATA;
   memcpy(&dst[retlen], &metadata, sizeof(metadata));
   retlen += sizeof(metadata);
@@ -1565,7 +1570,7 @@ char *myvector_construct_bv(const std::string &srctype, char *src, char *dst,
   ha_checksum cksum = my_checksum(0, (const unsigned char *)dst, retlen);
   memcpy(&dst[retlen], &cksum, sizeof(cksum));
   retlen += sizeof(cksum);
-
+#endif
   *length = retlen;
   return dst;
 }
@@ -1677,6 +1682,7 @@ extern "C" char *myvector_construct(UDF_INIT *initid, UDF_ARGS *args, char *resu
   } // while
 
 addChecksum:
+#if MYSQL_VERSION_ID < 90000
   unsigned int metadata = MYVECTOR_V1_FP32_METADATA;
   memcpy(&retvec[retlen], &metadata, sizeof(metadata));
   retlen += sizeof(metadata);
@@ -1684,7 +1690,7 @@ addChecksum:
   ha_checksum cksum = my_checksum(0, (const unsigned char *)retvec, retlen);
   memcpy(&retvec[retlen], &cksum, sizeof(cksum));
   retlen += sizeof(cksum);
-
+#endif
   *length = retlen;
 
   return retvec;
@@ -1728,7 +1734,7 @@ extern "C" char *myvector_display(UDF_INIT *initid, UDF_ARGS *args, char *result
   
   stringstream ostr;
 
-#ifdef MYVECTOR_VERIFY_CHECKSUM
+#if MYSQL_VERSION_ID < 90000
   ha_checksum cksum1;
   char        *raw = args->args[0];
   /* Checksum is at the end */
@@ -1738,11 +1744,12 @@ extern "C" char *myvector_display(UDF_INIT *initid, UDF_ARGS *args, char *result
                                    args->lengths[0] - sizeof(ha_checksum));
   if (cksum1 != cksum2) {
     *error   = 1;
-    return 0.0;
+    return "<invalid vector>";
   }
 #endif
 
   int dim = 0;
+#if MYSQL_VERSION_ID < 90000
   unsigned int metadata = 0;
   memcpy((char *)&metadata, &bvec[args->lengths[0] - MYVECTOR_COLUMN_EXTRA_LEN],
          sizeof(metadata));
@@ -1760,6 +1767,9 @@ extern "C" char *myvector_display(UDF_INIT *initid, UDF_ARGS *args, char *result
     bvec = nullptr;
     dim  = (args->lengths[0]) / sizeof(FP32);
   }
+#else
+  dim  = MyVectorDimFromStorageLength(args->lengths[0]);
+#endif
 
   ostr << "[";
   ostr << setprecision(precision);
