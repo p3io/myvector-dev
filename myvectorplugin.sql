@@ -48,9 +48,7 @@ DROP FUNCTION IF EXISTS myvector_row_distance;
 DROP FUNCTION IF EXISTS myvector_ann_set;
 DROP FUNCTION IF EXISTS myvector_is_valid;
 
--- next UDFs are purely 'internal'
 DROP FUNCTION IF EXISTS myvector_search_open_udf;
-DROP FUNCTION IF EXISTS myvector_search_add_row_udf;
 
 -- myvector_construct(vector_string VARCHAR)
 -- Return : Serialized sequence of native floats for storing in VARBINARY column
@@ -81,20 +79,75 @@ CREATE FUNCTION myvector_row_distance  RETURNS REAL   SONAME 'myvector.so';
 -- myvector_search_open_udf() - internal function, not for direct use
 CREATE FUNCTION myvector_search_open_udf RETURNS STRING  SONAME 'myvector.so';
 
--- myvector_search_add_row_udf() - internal function, not for direct use
-CREATE FUNCTION myvector_search_add_row_udf RETURNS INTEGER  SONAME 'myvector.so';
-
--- myvector_search_save_udf() - internal function, not for direct use
-CREATE FUNCTION myvector_search_save_udf RETURNS STRING  SONAME 'myvector.so';
-
 DROP PROCEDURE IF EXISTS MYVECTOR_INDEX_BUILD;
 
-DROP PROCEDURE IF EXISTS MYVECTOR_SEARCH_ADMIN;
+DROP PROCEDURE IF EXISTS MYVECTOR_INDEX_REFRESH;
+
+DROP PROCEDURE IF EXISTS MYVECTOR_INDEX_DROP;
+
+DROP PROCEDURE IF EXISTS MYVECTOR_INDEX_LOAD;
+
+DROP PROCEDURE IF EXISTS MYVECTOR_INDEX_STATUS;
+
+DROP PROCEDURE IF EXISTS MYVECTOR_INDEX_INTERNAL;
 
 DELIMITER //
 
--- action is 'build', 'refresh', 'load', 'drop'
-CREATE PROCEDURE MYVECTOR_INDEX_BUILD(
+
+CREATE PROCEDURE MYVECTOR_INDEX_STATUS(
+	IN myvectorcolumn VARCHAR(256))
+BEGIN
+        DECLARE extra   VARCHAR(1024);
+        DECLARE pkid    VARCHAR(1024);
+
+        SET extra = '';
+        SET pkid  = '';
+        
+        CALL MYVECTOR_INDEX_INTERNAL(myvectorcolumn, pkid, 'status', extra);
+
+END
+//
+
+CREATE PROCEDURE MYVECTOR_INDEX_DROP(
+	IN myvectorcolumn VARCHAR(256))
+BEGIN
+        DECLARE extra   VARCHAR(1024);
+        DECLARE pkid    VARCHAR(1024);
+
+        SET extra = '';
+        SET pkid  = '';
+        
+        CALL MYVECTOR_INDEX_INTERNAL(myvectorcolumn, pkid, 'drop', extra);
+END
+//
+
+CREATE PROCEDURE MYVECTOR_INDEX_LOAD(
+	IN myvectorcolumn VARCHAR(256))
+BEGIN
+        DECLARE extra   VARCHAR(1024);
+        DECLARE pkid    VARCHAR(1024);
+
+        SET extra = '';
+        SET pkid  = '';
+        
+        CALL MYVECTOR_INDEX_INTERNAL(myvectorcolumn, pkid, 'load', extra);
+END
+//
+
+CREATE PROCEDURE MYVECTOR_INDEX_REFRESH(
+	IN myvectorcolumn VARCHAR(256))
+BEGIN
+        DECLARE extra   VARCHAR(1024);
+        DECLARE pkid    VARCHAR(1024);
+
+        SET extra = '';
+        SET pkid  = '';
+        
+        CALL MYVECTOR_INDEX_INTERNAL(myvectorcolumn, pkid, 'refresh', extra);
+END
+//
+
+CREATE PROCEDURE MYVECTOR_INDEX_INTERNAL(
 	IN myvectorcolumn VARCHAR(256),
 	IN pkidcolumn     VARCHAR(64),
 	IN action         VARCHAR(64),
@@ -118,14 +171,15 @@ BEGIN
 	SET tname  = SUBSTR(temp, 1, pos-1);
 	SET cname  = SUBSTR(temp, pos+1);
 
-	SELECT CONCAT(dbname,'#',tname,'#',cname,'#');
 
 	SELECT column_comment INTO colinfo FROM INFORMATION_SCHEMA.COLUMNS
 	WHERE table_schema = dbname AND table_name = tname AND
 	column_name = cname;
 
 	IF colinfo IS NULL THEN
-	  SIGNAL SQLSTATE '50001' SET MESSAGE_TEXT = 'Column not found', MYSQL_ERRNO = 50001;
+	  SELECT myvectorcolumn AS InputVectorColumnName, CONCAT(dbname,'.',tname,'.',cname) AS ParsedVectorColumnName;
+          SELECT 'Please use the fully qualified vector column name : <database>.<table>.<column>' AS Message;
+	  SIGNAL SQLSTATE '50001' SET CONSTRAINT_NAME=myvectorcolumn, MESSAGE_TEXT = 'Vector column not found', MYSQL_ERRNO = 50001;
         END IF;
 
 	-- SELECT CONCAT('Column Comment is :',colinfo);
@@ -137,74 +191,21 @@ BEGIN
         -- Call UDF to open/build/load index
         SET status  = MYVECTOR_SEARCH_OPEN_UDF(myvectorcolumn, colinfo, pkidcolumn, action, extra);
 
-        SELECT CONCAT('Operation Status : ', status);
+        -- below output goes to the terminal as a single status from this procedure
+        SELECT status As Status;
 
 END
 //
 
 -- action is 'build', 'refresh', 'load', 'drop'
--- !!!NOTE!!! MYVECTOR_SEARCH_ADMIN() is deprecated, use MYVECTOR_INDEX_BUILD()
-CREATE PROCEDURE MYVECTOR_SEARCH_ADMIN(
+CREATE PROCEDURE MYVECTOR_INDEX_BUILD(
 	IN myvectorcolumn VARCHAR(256),
-	IN pkidcolumn     VARCHAR(64),
-	IN action         VARCHAR(64),
-        IN extra          VARCHAR(1024))
+	IN pkidcolumn     VARCHAR(64))
 BEGIN
-	DECLARE pos INT;
-	DECLARE status  VARCHAR(1024);
-	DECLARE temp    VARCHAR(256);
-	DECLARE dbname  VARCHAR(64);
-	DECLARE tname   VARCHAR(64);
-	DECLARE cname   VARCHAR(64);
-	DECLARE colinfo VARCHAR(1024);
-	DECLARE CONTINUE HANDLER FOR NOT FOUND SET colinfo = NULL;
-	-- Verify column name is db.table.column
+        DECLARE extra   VARCHAR(1024);
+        SET extra = '';
 
-        -- Read column comment from I_S.COLUMNS
-        SET pos    = LOCATE('.', myvectorcolumn);
-	SET dbname = SUBSTR(myvectorcolumn, 1, pos-1);
-	SET temp   = SUBSTR(myvectorcolumn, pos+1);
-	SET pos    = LOCATE('.', temp);
-	SET tname  = SUBSTR(temp, 1, pos-1);
-	SET cname  = SUBSTR(temp, pos+1);
-
-	SELECT CONCAT(dbname,'#',tname,'#',cname,'#');
-
-	SELECT column_comment INTO colinfo FROM INFORMATION_SCHEMA.COLUMNS
-	WHERE table_schema = dbname AND table_name = tname AND
-	column_name = cname;
-
-	IF colinfo IS NULL THEN
-	  SIGNAL SQLSTATE '50001' SET MESSAGE_TEXT = 'Column not found', MYSQL_ERRNO = 50001;
-        END IF;
-
-	-- SELECT CONCAT('Column Comment is :',colinfo);
-
-	IF LOCATE("MYVECTOR COLUMN", colinfo) <> 1 THEN
-	  SIGNAL SQLSTATE '50002' SET MESSAGE_TEXT = 'Column is not a MYVECTOR column', MYSQL_ERRNO = 50002;
-	END IF;
-
-        -- Call UDF to open/load index
-        SET status  = MYVECTOR_SEARCH_OPEN_UDF(myvectorcolumn, colinfo, pkidcolumn, action, extra);
-        IF action = "build" OR action = "refresh" THEN
-	  SET @loadsql = CONCAT('SELECT SUM(MYVECTOR_SEARCH_ADD_ROW_UDF(',
-				"'", myvectorcolumn, "'", ',',
-				"'", colinfo, "'", ',',
-				pkidcolumn, ',', cname, ')) as rows_indexed',
-			' FROM ', tname);
-          -- in case of "refresh", plugin UDF can return SUCCESS or a WHERE
-          -- clause if tracking_column was added to the MYVECTOR
-	  IF LOCATE(" WHERE ", status) <> 0 THEN
-	    SET @loadsql = CONCAT(@loadsql, status);
-	  END IF;
-	  SELECT CONCAT('Gen SQL IS :', @loadsql);
-	  PREPARE s1 from @loadsql;
-	  EXECUTE s1;
-          SET status  = MYVECTOR_SEARCH_SAVE_UDF(myvectorcolumn, colinfo, pkidcolumn, action, extra);
-          SET status = "SUCCESS";
-        END IF; -- build or refresh
-
-        SELECT CONCAT('Operation Status : ', status);
+        CALL MYVECTOR_INDEX_INTERNAL(myvectorcolumn, pkidcolumn, 'build', extra);
 
 END
 //
