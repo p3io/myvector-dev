@@ -388,6 +388,7 @@ KNNIndex::KNNIndex(const string & name, const string & options)
     {
         m_optionsMap.setOption("dist", "L2");
     }
+    setUpdateTs(0);
 }
 
 /* Brute-force, exact search KNN implemented using in-memory vector<> and
@@ -1901,12 +1902,12 @@ extern "C" bool myvector_search_open_udf_init(UDF_INIT *initid,
 
 void BuildMyVectorIndexSQL(const char *db, const char *table, const char *idcol,
                            const char *veccol, const char *action,
-                           const char *whereClause,
+                           const char *trackingColumn,
                            AbstractVectorIndex *vi,
                            char *errorbuf);
 
 void myvector_open_index_impl(char *vecid, char *details, char *pkidcol,
-              char *action, char *extra, char *whereClause, char *result)
+              char *action, char *extra, char *result)
 {
     bool existing =  true;
     /* Admin operations usecases :-
@@ -1938,6 +1939,10 @@ void myvector_open_index_impl(char *vecid, char *details, char *pkidcol,
     MyVectorOptions vo(details);
     if (vo.getOption("track").length()) {
        trackingColumn = vo.getOption("track");
+    }
+    if (!strcmp(action, "refresh") && !trackingColumn.length()) {
+        strcpy(result, "Tracking column not found for incremental refresh.");
+        return;
     }
     if (vo.getOption("threads").length()) { // override
        threads  = vo.getOption("threads");
@@ -1971,27 +1976,9 @@ void myvector_open_index_impl(char *vecid, char *details, char *pkidcol,
 
       vi->initIndex(); // start new
 
-      unsigned long currentts  = time(NULL);
-
-      if (trackingColumn.length()) {
-        snprintf(whereClause, 1024, " WHERE unix_timestamp(%s) <= %lu",
-                 trackingColumn.c_str(), currentts);
-      }
-      vi->setUpdateTs(currentts);
       if (nthreads >=2 ) vi->startParallelBuild(nthreads);
     }
     else if (!strcmp(action, "refresh")) {
-      unsigned long lastts = vi->getUpdateTs();
-      if (!lastts)  {
-      }
-
-      unsigned long currentts  = time(NULL);
-      if (trackingColumn.length()) {
-        snprintf(whereClause, 1024,
-          " WHERE unix_timestamp(%s) > %lu AND unix_timestamp(%s) <= %lu",
-          trackingColumn.c_str(), lastts, trackingColumn.c_str(), currentts);
-      }
-      vi->setUpdateTs(currentts);
       if (nthreads >= 2) vi->startParallelBuild(nthreads);
     }
 
@@ -2005,9 +1992,16 @@ void myvector_open_index_impl(char *vecid, char *details, char *pkidcol,
       veccol = strchr(table, '.');
       *veccol = 0;
       veccol++;
-      BuildMyVectorIndexSQL(db, table, pkidcol, veccol, action, whereClause,
+      BuildMyVectorIndexSQL(db, table, pkidcol, veccol, action, trackingColumn.c_str(),
                             vi, errorbuf);
       strcpy(result, errorbuf);
+      if (!strcmp(action, "refresh")) {
+         unsigned long lastts = vi->getUpdateTs();
+         char timebuf[64];
+         strcat(result, ", Vector Index refreshed at : ");
+         asctime_r(gmtime((time_t*)&lastts), timebuf);
+         strcat(result, timebuf);
+      }
 
       vi->saveIndex(myvector_index_dir, action);
     }
@@ -2024,7 +2018,6 @@ extern "C" char* myvector_search_open_udf(
     char *pkidcol =  args->args[2];
     char *action  =  args->args[3];
     char *extra   =  args->args[4];
-    char whereClause[1024] = "";
 
     my_plugin_log_message(&gplugin, MY_INFORMATION_LEVEL,
       "myvector_search_open() params %s %s %s %s %s",
@@ -2032,11 +2025,8 @@ extern "C" char* myvector_search_open_udf(
 
     strcpy(result, "SUCCESS");
 
-    myvector_open_index_impl(vecid, details, pkidcol, action, extra, whereClause, result);
+    myvector_open_index_impl(vecid, details, pkidcol, action, extra, result);
     
-    if (strlen(whereClause))
-      strcpy(result, whereClause);
-
     *length = strlen(result);
     return result;
 

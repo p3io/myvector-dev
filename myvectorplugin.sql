@@ -187,7 +187,7 @@ BEGIN
 	  SIGNAL SQLSTATE '50002' SET MESSAGE_TEXT = 'Column is not a MYVECTOR column', MYSQL_ERRNO = 50002;
 	END IF;
 
-	IF action = "REFRESH" AND LOCATE("track=", colinfo) <> 1 THEN
+	IF action = "refresh" AND LOCATE("track=", colinfo) = 0 THEN
 	  SIGNAL SQLSTATE '50003' SET MESSAGE_TEXT = 'MyVector Tracking timestamp column not found for incremental refresh', MYSQL_ERRNO = 50003;
 	END IF;
 

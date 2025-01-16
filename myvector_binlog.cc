@@ -419,7 +419,7 @@ void GetBaseTableColumnPositions(MYSQL *hnd, const char *db, const char *table,
 }
 
 void myvector_open_index_impl(char *vecid, char *details, char *pkidcol,
-             char *action, char *extra, char *whereClause, char *result);
+             char *action, char *extra, char *result);
 
 
 /* OpenAllOnlineVectorIndexes() - Query MYVECTOR_COLUMNS view and open/load
@@ -480,7 +480,7 @@ void OpenAllOnlineVectorIndexes(MYSQL *hnd) {
       char action[] = "load";
       char vecid[1024];
       sprintf(vecid,"%s.%s.%s", dbname, tbl, col);
-      myvector_open_index_impl(vecid, info, empty, action, empty, empty, empty);
+      myvector_open_index_impl(vecid, info, empty, action, empty, empty);
 
       sprintf(vecid, "%s.%s", dbname, tbl);
       VectorIndexColumnInfo vc{col, idcolpos, veccolpos};
@@ -497,7 +497,7 @@ void OpenAllOnlineVectorIndexes(MYSQL *hnd) {
  */
 void BuildMyVectorIndexSQL(const char *db, const char *table, const char *idcol,
                            const char *veccol, const char *action,
-                           const char *whereClause,
+                           const char *trackingColumn,
                            AbstractVectorIndex *vi,
                            char *errorbuf) {
 
@@ -505,7 +505,7 @@ void BuildMyVectorIndexSQL(const char *db, const char *table, const char *idcol,
   size_t nRows = 0;
 
   fprintf(stderr, "BuildMyVectorIndexSQL %s %s %s %s %s %s.\n",
-          db, table, idcol, veccol,  action, whereClause);
+          db, table, idcol, veccol,  action, trackingColumn);
 
   MYSQL mysql;
 
@@ -521,7 +521,15 @@ void BuildMyVectorIndexSQL(const char *db, const char *table, const char *idcol,
     return;
   }
 
+  (void) mysql_autocommit(&mysql, false);
+
   char query[MYVECTOR_BUFF_SIZE];
+    
+  sprintf(query, "SET TRANSACTION ISOLATION LEVEL READ COMMITTED");
+  if (mysql_real_query(&mysql, query, strlen(query))) {
+    //TODO
+    return;
+  }
 
   sprintf(query, "LOCK TABLES %s.%s READ", db, table); // No DMLs during build.
 
@@ -532,8 +540,23 @@ void BuildMyVectorIndexSQL(const char *db, const char *table, const char *idcol,
 
   sprintf(query, "SELECT %s, %s FROM %s.%s", idcol, veccol, db, table);
 
-  if (whereClause && strlen(whereClause))
+  /// table has been locked, now we perform the timestamp related stuff
+  unsigned long current_ts  = time(NULL);
+
+  if (!strcmp(action, "refresh") || strlen(trackingColumn))
+  {
+    char whereClause[1024];
+
+
+    unsigned long previous_ts = vi->getUpdateTs();
+    snprintf(whereClause, sizeof(whereClause), " WHERE unix_timestamp(%s) > %lu AND unix_timestamp(%s) <= %lu",
+             trackingColumn, previous_ts, trackingColumn, current_ts);
     strcat(query, whereClause);
+  }
+
+  vi->setUpdateTs(current_ts);
+
+  fprintf(stderr, "Final Build Query : %s\n", query);
 
   if (mysql_real_query(&mysql, query, strlen(query))) {
     //TODO
@@ -556,6 +579,7 @@ void BuildMyVectorIndexSQL(const char *db, const char *table, const char *idcol,
       //TODO
     }
 
+    fprintf(stderr, "Inserted %ld \n", atol(idval));
     vi->insertVector(vec, 40, atol(idval));
     nRows++;
   }
