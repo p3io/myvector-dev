@@ -133,6 +133,27 @@ mysql> select word from words50d where MYVECTOR_IS_ANN('test.words50d.wordvec','
 | graduated  |
 | university |
 +------------+
+
+Above query is an ANN (Approximate Nearest Neighbour) search using HNSW index. Same query using brute-force KNN search -
+
+mysql> select word, myvector_distance(wordvec, (select wordvec from words50d where word='harvard')) dist
+    -> from words50d
+    -> order by dist limit 10;
++------------+--------------------+
+| word       | dist               |
++------------+--------------------+
+| harvard    |                  0 |
+| yale       | 2.1707963943481445 |
+| princeton  |  4.680581569671631 |
+| graduate   |  5.781985282897949 |
+| cornell    | 6.9659576416015625 |
+| stanford   |  7.545614719390869 |
+| berkeley   |  9.327140808105469 |
+| professor  |  9.741127014160156 |
+| graduated  | 10.451380729675293 |
+| university | 10.852202415466309 |
++------------+--------------------+
+10 rows in set (0.31 sec)
 ```
 
 ----
