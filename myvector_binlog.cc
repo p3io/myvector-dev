@@ -145,7 +145,7 @@ typedef struct
     std::string     dbName;
     std::string     tableName;
     unsigned int    nColumns;
-    vector<char>    columnTypes;
+    vector<unsigned char>    columnTypes;
     vector<int>     columnMetadata;
 } TableMapEvent;
 
@@ -197,6 +197,9 @@ void parseTableMapEvent(const unsigned char * event_buf, unsigned int event_len,
             case MYSQL_TYPE_BLOB:
             case MYSQL_TYPE_JSON:
             case MYSQL_TYPE_GEOMETRY:
+#if MYSQL_VERSION_ID >= 90000
+            case MYSQL_TYPE_VECTOR:
+#endif
                 md = (unsigned int)event_buf[index]; index++;
                 break;
             case MYSQL_TYPE_BIT:
@@ -283,6 +286,19 @@ void parseRowsEvent(const unsigned char *event_buf, unsigned int event_len,
                index += clen;
                break;
                }
+#if MYSQL_VERSION_ID >= 90000
+      case MYSQL_TYPE_VECTOR: {
+               unsigned int clen = 0;
+               memcpy(&clen, &event_buf[index], tev.columnMetadata[i]);
+               index += tev.columnMetadata[i];
+               if (i == pos2) { // found vector column
+                 vec = &event_buf[index];
+                 vecsz = clen;
+               }
+               index += clen;
+               break;
+               }
+#endif
       case MYSQL_TYPE_TIMESTAMP2:
                index+=4;
                break;
@@ -653,12 +669,12 @@ void myvector_binlog_loop(int id) {
 
   int connect_attempts = 0;
 
+  readConfigFile(myvector_config_file);
+
   if (myvector_feature_level & 1) {
     fprintf(stderr, "Binlog event thread is disabled!\n");
     return;
   }
-
-  readConfigFile(myvector_config_file);
 
   /* wait till mysql is open to access */
   while (1) {
