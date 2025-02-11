@@ -595,8 +595,7 @@ void BuildMyVectorIndexSQL(const char *db, const char *table, const char *idcol,
       //TODO
     }
 
-    fprintf(stderr, "Inserted %ld \n", atol(idval));
-    vi->insertVector(vec, 40, atol(idval));
+    vi->insertVector(vec, 0, atol(idval)); /// dimension is known by the VI
     nRows++;
   }
 
