@@ -1,4 +1,5 @@
 **ANNOUNCEMENTS**
+
 FOSDEM'2025 MySQL Devroom Session (Brussels / 1 & 2 February 2025):
 
 https://fosdem.org/2025/schedule/event/fosdem-2025-4230-boosting-mysql-with-vector-search-introducing-the-myvector-plugin/
