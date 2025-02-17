@@ -120,6 +120,8 @@ public:
 
     virtual void setLastUpdateCoordinates(const string & /* file */, const size_t & /* pos */) {}
 
+    virtual void setSearchEffort(int ef_search) {} /* how much deep/wide to go? e.g ef_search in HNSW */
+
     void lockShared()      { m_mutex.lock_shared(); }
     void lockExclusive()   { m_mutex.lock(); }
 

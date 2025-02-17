@@ -595,7 +595,7 @@ void BuildMyVectorIndexSQL(const char *db, const char *table, const char *idcol,
       //TODO
     }
 
-    vi->insertVector(vec, 0, atol(idval)); /// dimension is known by the VI
+    vi->insertVector(vec, 0, atol(idval)); /// dim is already known by vi
     nRows++;
   }
 
@@ -746,8 +746,8 @@ void myvector_binlog_loop(int id) {
        parseRotateEvent(event_buf, event_len, currentBinlogFile, currentBinlogPos, (currentBinlogFile.length() > 0));
        continue;
      }
-     fprintf(stderr, "binlog position : %s %lu (%lu)\n",
-             currentBinlogFile.c_str(), currentBinlogPos, currentBinlogPos + event_len);
+     /// fprintf(stderr, "binlog position : %s %lu (%lu)\n",
+     ///        currentBinlogFile.c_str(), currentBinlogPos, currentBinlogPos + event_len);
      currentBinlogPos += event_len;
      if (g_OnlineVectorIndexes.size() == 0) continue; // optimization!
      if (type == binary_log::TABLE_MAP_EVENT) {

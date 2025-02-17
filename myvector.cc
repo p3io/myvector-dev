@@ -228,6 +228,44 @@ double computeCosineDistance(const FP32 * __restrict v1, const FP32 * __restrict
     return (1 - dist);
 }
 
+float computeCosineDistanceFn(const void * __restrict v1, const void * __restrict v2, const void * __restrict qty_ptr)
+{
+    size_t qty = *((size_t*)qty_ptr); /// dimension of the vector
+    return (float)computeCosineDistance((const FP32 *)v1, (const FP32 *)v2, (int)qty);
+}
+
+class AngularDistanceSpace : public hnswlib::SpaceInterface<float> {
+    hnswlib::DISTFUNC<float> fstdistfunc_;
+    size_t data_size_;
+    size_t dim_;
+
+public:
+
+    AngularDistanceSpace(size_t dim)
+    {
+        fstdistfunc_ = computeCosineDistanceFn;
+        dim_         = dim;
+        data_size_   = dim * sizeof(float);
+    }
+
+    size_t get_data_size()
+    {
+        return data_size_;
+    }
+
+    hnswlib::DISTFUNC<float> get_dist_func()
+    {
+        return fstdistfunc_;
+    }
+
+    void * get_dist_func_param()
+    {
+        return &dim_;
+    }
+
+    ~AngularDistanceSpace() {}
+};
+
 /* HammingDistanceFn - Calculate Hamming distance between 2 bit vectors. Prototype is in HNSWLIB style */
 float HammingDistanceFn(const void * __restrict pVect1, const void * __restrict pVect2, const void * __restrict qty_ptr)
 {
@@ -565,6 +603,8 @@ public:
     void setLastUpdateCoordinates(const string & binlogFile, const size_t & binlogPos);
     void getCheckPointString(string & ckstr);
 
+    void setSearchEffort(int ef_search);
+
 private:
     string        m_name;
     string        m_type;
@@ -577,6 +617,8 @@ private:
     int         m_ef_search;
     int         m_M;
     int         m_size;
+
+    string      m_dist;
           
     hnswlib::AlgorithmInterface<FP32> *m_alg_hnsw = nullptr;
     hnswlib::SpaceInterface<float>* m_space = nullptr;
@@ -617,6 +659,16 @@ HNSWMemoryIndex::HNSWMemoryIndex(const string & name, const string & options)
   m_type              = m_optionsMap.getOption("type"); // Supports HNSW and HNSW_BV
   m_incrUpdates       = m_optionsMap.getOption("online") == "Y";
   m_incrRefresh       = m_optionsMap.getOption("track").length() > 0;
+
+  m_dist              = "L2";
+
+  if (m_optionsMap.getOption("dist") == "Cosine")
+        m_dist = "Cosine";
+  else if (m_optionsMap.getOption("dist") == "CosineNorm")
+       m_dist = "CosineNorm";
+  else if (m_optionsMap.getOption("dist") == "Angular")
+       m_dist = "Angular";
+
 
   if (m_optionsMap.getOption("ef_search").length())
     m_ef_search = atoi(m_optionsMap.getOption("ef_search").c_str());
@@ -805,11 +857,22 @@ bool HNSWMemoryIndex::closeIndex()
 {
     return true;
 }
+
+void HNSWMemoryIndex::setSearchEffort(int ef_search)
+{
+    (dynamic_cast<hnswlib::HierarchicalDiskNSW<FP32>*>(m_alg_hnsw))->setEf(ef_search);
+}
     
 hnswlib::SpaceInterface<float>* HNSWMemoryIndex::getSpace(size_t dim)
 {
-    if (m_type == "HNSW") 
+    if (m_type == "HNSW"  && m_dist == "L2")
         return new hnswlib::L2Space(m_dim);
+    else if (m_type == "HNSW" && m_dist == "CosineNorm")
+        return new hnswlib::InnerProductSpace(m_dim);
+    else if (m_type == "HNSW" && m_dist == "Cosine")
+        return new AngularDistanceSpace(m_dim);
+    else if (m_type == "HNSW" && m_dist == "Angular")
+        return new AngularDistanceSpace(m_dim);
     else if (m_type == "HNSW_BV")
         return new HammingBinaryVectorSpace(m_dim);
 
@@ -1446,6 +1509,7 @@ extern "C" char* myvector_ann_set(UDF_INIT * initid, UDF_ARGS * args, char * res
   if (args->arg_count == 4) searchoptions = args->args[3];
 
   int nn = MYVECTOR_DEFAULT_ANN_RETURN_COUNT;
+  int ef_search = 0;
   if (searchoptions && args->lengths[3]) {
     MyVectorOptions vo(searchoptions);
     string          nstr = vo.getOption("nn"); /* How many neighbours to return? */
@@ -1454,6 +1518,12 @@ extern "C" char* myvector_ann_set(UDF_INIT * initid, UDF_ARGS * args, char * res
     if (nn <= 0)       nn = MYVECTOR_DEFAULT_ANN_RETURN_COUNT;
     
     nn = min((const unsigned int)nn, MYVECTOR_MAX_ANN_RETURN_COUNT);
+
+    string ef_search_str = vo.getOption("ef_search");
+    if (ef_search_str.length())
+    {
+        ef_search = atoi(ef_search_str.c_str());
+    }
   }
  
   AbstractVectorIndex *vi = g_indexes.get(col);
@@ -1462,6 +1532,7 @@ extern "C" char* myvector_ann_set(UDF_INIT * initid, UDF_ARGS * args, char * res
   stringstream ss;
   if (vi && searchvec) {
     vector<KeyTypeInteger> result;
+    if (ef_search) vi->setSearchEffort(ef_search);
     vi->searchVectorNN(searchvec, vi->getDimension(), result, nn);
 
     /* simple JSON list of neighbour rows Pkid */
