@@ -1,5 +1,10 @@
 **ANNOUNCEMENTS**
 
+ChatGPT generated descritpion of MyVector (concise and accurate!) :
+
+https://chatgpt.com/share/67b4af65-7d20-8011-aaa2-ff79442055b0
+
+
 FOSDEM'2025 MySQL Devroom Session (Brussels / 1 & 2 February 2025):
 
 https://fosdem.org/2025/schedule/event/fosdem-2025-4230-boosting-mysql-with-vector-search-introducing-the-myvector-plugin/
