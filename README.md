@@ -74,12 +74,20 @@ The MyVector config file is a simple key-value file listing a few variables for 
 
 ```
 $ cat myvector.cnf
-myvector_user_id=root
-myvector_user_password=...
+myvector_user_id=<dbuser>
+myvector_user_password=<password>
 myvector_socket=/tmp/mysql.sock
 ```
 
-This file should be readable **ONLY** by the "mysql" user.
+This file should be readable **ONLY** by the "mysql" OS user. The plugin connects to MySQL for -
+
+a) Reading the base table during index create
+
+b) Receive the binlog events if online index update is enabled.
+
+The <dbuser> can be given only minimal privileges corresponding to the above use -> SELECT on
+
+the base table(s), REPLICATION_CLIENT & REPLICATION_SLAVE.
 
 
 ---
