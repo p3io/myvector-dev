@@ -85,7 +85,7 @@ a) Reading the base table during index create
 
 b) Receive the binlog events if online index update is enabled.
 
-The <dbuser> can be given only minimal privileges corresponding to the above use -> SELECT on
+The "dbuser" can be given only minimal privileges corresponding to the above use -> SELECT on
 
 the base table(s), REPLICATION_CLIENT & REPLICATION_SLAVE.
 
