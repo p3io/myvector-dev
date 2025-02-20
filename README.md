@@ -11,6 +11,9 @@ https://fosdem.org/2025/schedule/event/fosdem-2025-4230-boosting-mysql-with-vect
 
 Slide deck is available in the above page. The presentation video contains 3 exciting demos!
 
+**DEMO**
+[![asciicast](https://asciinema.org/a/O7rNs2OzLXyUja0bwWcldXsX9.svg)](https://asciinema.org/a/O7rNs2OzLXyUja0bwWcldXsX9)
+
 **BUILD**
 
 ```
