@@ -1,8 +1,17 @@
 ** ANN Benchmark - MyVector vs PGVector vs MariaDB **
 
+_Server_
+
+```
+Cloud : OVH
+Model Name      : AMD EPYC 9254 24-Core Processor
+CPU : 48
+RAM : 128GB
+```
+
 _gist-960-euclidean_
 
-Distance : L2/Euclidean
+Index Build (Distance : L2/Euclidean)
 
 | Algorithm |  M  | efconstruction |  Threads  | Build Time |
 |-----------|-----|----------------|-----------|------------|
@@ -19,7 +28,7 @@ Distance : L2/Euclidean
 
 _dbpedia-openai-1000k-angular_
 
-Distance : Cosine
+Index Build (Distance : Cosine)
 
 | Algorithm |  M  | efconstruction |  Threads  | Build Time |
 |-----------|-----|----------------|-----------|------------|
@@ -27,7 +36,7 @@ Distance : Cosine
 | MyVector  | 24  |   400          | 48        | 13m 1s     |
 | MariaDB   | 24  |     N.A        | 1         | 98m        |
 
-k = 10
+KNN Search, k = 10
 
 | Algorithm |  M  | efconstruction | ef search | Recall     |  QPS |
 |-----------|-----|----------------|-----------|------------|------|
@@ -46,7 +55,7 @@ k = 10
 |           |     |                | 400       | 1.000      |   3  |
 |           |     |                | 800       | 1.000      |   3  |
 
-k = 100
+KNN Search, k = 100
 
 | Algorithm |  M  | efconstruction | ef search | Recall     |  QPS |
 |-----------|-----|----------------|-----------|------------|------|
