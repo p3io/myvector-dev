@@ -36,11 +36,15 @@ Index Build (Distance : Cosine)
 | MyVector  | 24  |   400          | 48        | 13m 1s     |
 | MariaDB   | 24  |     N.A        | 1         | 98m        |
 
-KNN Search, k = 10
+MariaDB does not have a equivalent efconstruction ->
+https://lists.mariadb.org/hyperkitty/list/discuss@lists.mariadb.org/thread/PPRJF4JAFE3RIKMEPAFY2IUJJ4RPHPAW/
+
+
+ANN Search, k = 10
 
 | Algorithm |  M  | efconstruction | ef search | Recall     |  QPS |
 |-----------|-----|----------------|-----------|------------|------|
-| MyVector  | 24  |   200          | 10        | 0.851      | 775  |
+| MyVector  | 24  |   400          | 10        | 0.851      | 775  |
 |           |     |                | 20        | 0.929      | 743  |
 |           |     |                | 40        | 0.970      | 800  |
 |           |     |                | 80        | 0.988      | 604  |
@@ -55,7 +59,7 @@ KNN Search, k = 10
 |           |     |                | 400       | 1.000      |   3  |
 |           |     |                | 800       | 1.000      |   3  |
 
-KNN Search, k = 100
+rAN Search, k = 100
 
 | Algorithm |  M  | efconstruction | ef search | Recall     |  QPS |
 |-----------|-----|----------------|-----------|------------|------|
