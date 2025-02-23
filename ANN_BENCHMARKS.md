@@ -59,7 +59,7 @@ ANN Search, k = 10
 |           |     |                | 400       | 1.000      |   3  |
 |           |     |                | 800       | 1.000      |   3  |
 
-rAN Search, k = 100
+ANN Search, k = 100
 
 | Algorithm |  M  | efconstruction | ef search | Recall     |  QPS |
 |-----------|-----|----------------|-----------|------------|------|
