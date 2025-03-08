@@ -481,7 +481,7 @@
         size_t ofs = (level0Links - data_level0_memory_) + HNSW_FILE_METADATA_SIZE;
         Lseek(hnswFile, ofs, SEEK_SET, hnswFileName);
         Write(hnswFile, level0Links, size_links_level0_, hnswFileName, __LINE__);
-        debug_print("Write level0 links of %lu at %lu.", nodeId, ofs);
+        /// debug_print("Write level0 links of %lu at %lu.", nodeId, ofs);
     }
 
     Fsync(hnswFile, hnswFileName);
@@ -506,7 +506,7 @@
                     linksLocation, __LINE__);
               Write(linksDirOutput, &linkListSize, sizeof(linkListSize), 
                     linksLocation, __LINE__);
-              debug_print("Flushing new gt0 node %lu.", nodeId);
+              /// debug_print("Flushing new gt0 node %lu.", nodeId);
             }
             else {
               datafileOfs = m_linksOffsetsInFile[nodeId];
@@ -517,8 +517,8 @@
             {
                Lseek(linksDataOutput, 0, SEEK_END, linksDataLocation);
                m_linksOffsetsInFile[nodeId] = Lseek(linksDataOutput, 0, SEEK_CUR, linksDataLocation);
-               debug_print("Writing Gt0 links of node %lu, size %lu, file offset %lu.",
-                           nodeId, linkListSize, m_linksOffsetsInFile[nodeId]);
+               /// debug_print("Writing Gt0 links of node %lu, size %lu, file offset %lu.",
+               ///            nodeId, linkListSize, m_linksOffsetsInFile[nodeId]);
             }
             Write(linksDataOutput, linkLists_[nodeId], linkListSize, linksDataLocation, __LINE__);
         }

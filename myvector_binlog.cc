@@ -773,7 +773,6 @@ void myvector_binlog_loop(int id) {
        vector<VectorIndexUpdateItem *> updates;
        parseRowsEvent(event_buf, event_len, tev, idcolpos - 1, veccolpos - 1, updates);
        nrows += updates.size();
-       fprintf(stderr, "parseRowsEvent returned %lu rows,  total = %lu\n", updates.size(), nrows);
        for (auto item : updates) {
          gqueue_.enqueue(item);
        }
