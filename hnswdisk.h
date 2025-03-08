@@ -12,10 +12,13 @@
 #include <set>
 #include <sstream>
 #include <map>
-
+#ifdef WIN32
+#include <io.h>
+#else
 #include <unistd.h>
 #include <fcntl.h>
 #include <sys/time.h>
+#endif
 
 namespace hnswlib {
 typedef unsigned int tableint;

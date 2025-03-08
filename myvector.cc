@@ -34,7 +34,52 @@
 #include <shared_mutex>
 #include <unordered_map>
 
-#include <unistd.h>
+#ifdef WIN32
+#define PLUGIN_EXPORT extern "C" __declspec(dllexport)
+#else
+#define PLUGIN_EXPORT extern "C"
+#endif
+
+#ifdef WIN32
+    #include <windows.h>
+    #include <io.h>
+    #include <fcntl.h>
+    #include <sys\types.h>
+    #include <sys\stat.h>
+    #include <time.h>
+    #include <winsock2.h>
+
+    int fsync(int fd)
+    {
+        return _commit(fd);
+    }
+
+    static void usleep(int usec) {
+        ::Sleep(usec / 1000);
+    }
+    int strcasecmp(const char *s1, const char *s2)
+    {
+        return strcmp(s1, s2);
+    }
+    void asctime_r(const struct tm* timeptr, char* dst)
+    {
+        const char *poi = asctime(timeptr);
+        strcpy(dst, poi);
+    }
+    int gettimeofday(struct timeval *tv, struct timezone *tz)
+    {
+      tv->tv_sec = time(0);
+      tv->tv_usec = 0;
+      return 0;
+    }
+
+    #define O_WRONLY _O_WRONLY
+    #define O_CREAT  _O_CREAT
+    #define O_TRUNC _O_TRUNC
+    #define O_RDWR _O_RDWR
+#else
+    #include <unistd.h>
+#endif
 
 #include "mysql.h" 
 #include "mysql/plugin.h"
@@ -285,15 +330,15 @@ float HammingDistanceFn(const void * __restrict pVect1, const void * __restrict 
     {
         unsigned long res = (*a ^ *b); a++; b++;
 
-#ifdef SLOW_CODE
+#ifdef WIN32
         while (res > 0)
         {
             ldist += (res & 1);
             res >>= 1;
         }
-#endif
-
+#else
         ldist += __builtin_popcountll(res);
+#endif
     }
     dist = ldist;
     return dist;
@@ -1449,7 +1494,7 @@ bool myvector_query_rewrite(const string & query, string * rewritten_query)
     return (*rewritten_query != query);
 }
 
-extern "C" bool myvector_ann_set_init(UDF_INIT *initid, UDF_ARGS *args, char *message)
+PLUGIN_EXPORT bool myvector_ann_set_init(UDF_INIT *initid, UDF_ARGS *args, char *message)
 {
     initid->ptr = nullptr;
     if (args->arg_count < 3 || args->arg_count > 4)
@@ -1482,7 +1527,7 @@ extern "C" bool myvector_ann_set_init(UDF_INIT *initid, UDF_ARGS *args, char *me
     return false;
 }
 
-extern "C" void myvector_ann_set_deinit(UDF_INIT * initid)
+PLUGIN_EXPORT void myvector_ann_set_deinit(UDF_INIT * initid)
 {
     if (initid && initid->ptr)
         free(initid->ptr);
@@ -1491,7 +1536,7 @@ extern "C" void myvector_ann_set_deinit(UDF_INIT * initid)
     tls_distances = nullptr;
 }
 
-extern "C" char* myvector_ann_set(UDF_INIT * initid, UDF_ARGS * args, char * result,
+PLUGIN_EXPORT char* myvector_ann_set(UDF_INIT * initid, UDF_ARGS * args, char * result,
                           unsigned long * length, unsigned char * is_null,
                           unsigned char * error)
 {
@@ -1648,7 +1693,7 @@ char *myvector_construct_bv(const std::string &srctype, char *src, char *dst,
 }
 
 
-extern "C" bool myvector_construct_init(UDF_INIT *initid, UDF_ARGS *args, char *message) {
+PLUGIN_EXPORT bool myvector_construct_init(UDF_INIT *initid, UDF_ARGS *args, char *message) {
     if (args->arg_count < 1 || args->arg_count > 2)
     {
         strcpy(message, "Incorrect arguments, usage : "
@@ -1674,11 +1719,11 @@ extern "C" bool myvector_construct_init(UDF_INIT *initid, UDF_ARGS *args, char *
  *             If input string is NULL, then NULL is returned.
  */
 
-extern "C" char *myvector_construct(UDF_INIT *initid, UDF_ARGS *args, char *result,
+PLUGIN_EXPORT char *myvector_construct(UDF_INIT *initid, UDF_ARGS *args, char *result,
                           unsigned long *length, unsigned char *is_null,
                           unsigned char *error) {
   char *ptr = args->args[0];
-  char *opt = nullptr;
+  const char *opt = nullptr;
   if (args->arg_count == 2)
     opt = args->args[1];
 
@@ -1769,10 +1814,10 @@ addChecksum:
 }
 
 
-extern "C" void myvector_construct_deinit(UDF_INIT *initid) 
+PLUGIN_EXPORT void myvector_construct_deinit(UDF_INIT *initid)
 { if (initid && initid->ptr) free(initid->ptr); }
 
-extern "C" bool myvector_display_init(UDF_INIT *initid, UDF_ARGS *args, char *message) {
+PLUGIN_EXPORT bool myvector_display_init(UDF_INIT *initid, UDF_ARGS *args, char *message) {
   if (args->arg_count == 0 || args->arg_count > 2) {
     strcpy(message, "Incorrect arguments, usage : myvector_display(vec_col_expr, ['prec']).");
     return true; // error
@@ -1783,7 +1828,7 @@ extern "C" bool myvector_display_init(UDF_INIT *initid, UDF_ARGS *args, char *me
   return false;
 }
 
-extern "C" char *myvector_display(UDF_INIT *initid, UDF_ARGS *args, char *result,
+PLUGIN_EXPORT char *myvector_display(UDF_INIT *initid, UDF_ARGS *args, char *result,
                           unsigned long *length, char *is_null,
                           char *error) {
   unsigned char *bvec = (unsigned char *)args->args[0];
@@ -1865,11 +1910,11 @@ extern "C" char *myvector_display(UDF_INIT *initid, UDF_ARGS *args, char *result
   return result;
 }
 
-extern "C" void myvector_display_deinit(UDF_INIT *initid)
+PLUGIN_EXPORT void myvector_display_deinit(UDF_INIT *initid)
 { if (initid && initid->ptr) free(initid->ptr); }
 
 /* UDF MYVECTOR_DISTANCE() Implementation */
-extern "C" bool myvector_distance_init(UDF_INIT *, UDF_ARGS * args, char * message)
+PLUGIN_EXPORT bool myvector_distance_init(UDF_INIT *, UDF_ARGS * args, char * message)
 {
     if (args->arg_count < 2)
     {
@@ -1884,7 +1929,7 @@ extern "C" bool myvector_distance_init(UDF_INIT *, UDF_ARGS * args, char * messa
     return false;
 }
 
-extern "C" bool myvector_construct_binaryvector_init(UDF_INIT *initid, UDF_ARGS *args, char *message) {
+PLUGIN_EXPORT bool myvector_construct_binaryvector_init(UDF_INIT *initid, UDF_ARGS *args, char *message) {
   if (args->arg_count != 1) {
     strcpy(message, "Incorrect arguments, usage : myvector_construct_binary_vector(vec_col_expr)");
     return true; // error
@@ -1895,11 +1940,11 @@ extern "C" bool myvector_construct_binaryvector_init(UDF_INIT *initid, UDF_ARGS 
 }
 
 
-extern "C" bool myvector_hamming_distance_init(UDF_INIT *initid, UDF_ARGS *args, char *message) {
+PLUGIN_EXPORT bool myvector_hamming_distance_init(UDF_INIT *initid, UDF_ARGS *args, char *message) {
   return false;
 }
 
-extern "C" double myvector_hamming_distance(UDF_INIT *, UDF_ARGS *args, char *is_null,
+PLUGIN_EXPORT double myvector_hamming_distance(UDF_INIT *, UDF_ARGS *args, char *is_null,
                           char *) {
   double dist = 0.0;
   unsigned long *v1 = (unsigned long *)(args->args[0]);
@@ -1910,7 +1955,7 @@ extern "C" double myvector_hamming_distance(UDF_INIT *, UDF_ARGS *args, char *is
   return HammingDistanceFn(v1, v2, &dim);
 }
 
-extern "C" double myvector_distance(UDF_INIT *, UDF_ARGS *args, char *is_null,
+PLUGIN_EXPORT double myvector_distance(UDF_INIT *, UDF_ARGS *args, char *is_null,
                           char *error) {
   double dist = 0.0;
   FP32 *v1 = (FP32 *)(args->args[0]);
@@ -1958,10 +2003,10 @@ extern "C" double myvector_distance(UDF_INIT *, UDF_ARGS *args, char *is_null,
   return dist;
 }
 
-extern "C" void myvector_distance_deinit(UDF_INIT *initid) {}
+PLUGIN_EXPORT void myvector_distance_deinit(UDF_INIT *initid) {}
 
 
-extern "C" bool myvector_search_open_udf_init(UDF_INIT *initid,
+PLUGIN_EXPORT bool myvector_search_open_udf_init(UDF_INIT *initid,
                 UDF_ARGS *args, char *message) {
   if (args->arg_count != 5) {
     strcpy(message, "Incorrect arguments to MyVector internal UDF.");
@@ -2080,7 +2125,7 @@ void myvector_open_index_impl(char *vecid, char *details, char *pkidcol,
 
 }
 
-extern "C" char* myvector_search_open_udf(
+PLUGIN_EXPORT char* myvector_search_open_udf(
                 UDF_INIT *, UDF_ARGS *args, char *result,
                 unsigned long *length, unsigned char *is_null,
                 unsigned char *) {
@@ -2103,9 +2148,9 @@ extern "C" char* myvector_search_open_udf(
 
 }
 
-extern "C" void myvector_search_open_udf_deinit() {}
+PLUGIN_EXPORT void myvector_search_open_udf_deinit() {}
 
-extern "C" bool myvector_search_save_udf_init(UDF_INIT *initid,
+PLUGIN_EXPORT bool myvector_search_save_udf_init(UDF_INIT *initid,
                 UDF_ARGS *args, char *message) {
   if (args->arg_count != 5) {
     strcpy(message, "Incorrect arguments to MyVector internal UDF.");
@@ -2114,7 +2159,7 @@ extern "C" bool myvector_search_save_udf_init(UDF_INIT *initid,
   return false;
 }
 
-extern "C" char* myvector_search_save_udf(
+PLUGIN_EXPORT char* myvector_search_save_udf(
                 UDF_INIT *, UDF_ARGS *args, char *result,
                 unsigned long *length, unsigned char *is_null,
                 unsigned char *) {
@@ -2137,9 +2182,9 @@ extern "C" char* myvector_search_save_udf(
     return result;
 }
 
-extern "C" void myvector_search_save_udf_deinit() {}
+PLUGIN_EXPORT void myvector_search_save_udf_deinit() {}
 
-extern "C" bool myvector_search_add_row_udf_init(UDF_INIT *initid,
+PLUGIN_EXPORT bool myvector_search_add_row_udf_init(UDF_INIT *initid,
                 UDF_ARGS *args, char *message) {
   char *vecid   =  args->args[0];
   char *details =  args->args[1];
@@ -2156,7 +2201,7 @@ extern "C" bool myvector_search_add_row_udf_init(UDF_INIT *initid,
 }
 
 /* UDF : myvector_search_add_row_udf() */
-extern "C" long long myvector_search_add_row_udf(
+PLUGIN_EXPORT long long myvector_search_add_row_udf(
                 UDF_INIT *initid, UDF_ARGS *args, char *is_null,
                 char *error)
 {
@@ -2180,7 +2225,7 @@ extern "C" long long myvector_search_add_row_udf(
 }
 
 /* UDF : myvector_search_add_row_udf() */
-extern "C" void myvector_search_add_row_udf_deinit(UDF_INIT *initid) {
+PLUGIN_EXPORT void myvector_search_add_row_udf_deinit(UDF_INIT *initid) {
   /* build/rebuild/refresh complete - persist the index if it is capable */
   AbstractVectorIndex *vi = (AbstractVectorIndex *)(initid->ptr);
 
@@ -2198,7 +2243,7 @@ extern "C" void myvector_search_add_row_udf_deinit(UDF_INIT *initid) {
   return;
 }
 
-extern "C" bool myvector_is_valid_init(UDF_INIT *initid, UDF_ARGS *args,
+PLUGIN_EXPORT bool myvector_is_valid_init(UDF_INIT *initid, UDF_ARGS *args,
                                        char *message) {
   if (!initid || args->arg_count != 2) {
     strcpy(message, "Incorrect arguments to myvector_is_valid(), "
@@ -2209,7 +2254,7 @@ extern "C" bool myvector_is_valid_init(UDF_INIT *initid, UDF_ARGS *args,
 }
 
 /* myvector_is_valid : Verify vector checksum and dimension */
-extern "C" long long myvector_is_valid(
+PLUGIN_EXPORT long long myvector_is_valid(
                 UDF_INIT *, UDF_ARGS *args, 
                 unsigned char *, unsigned char *) {
   long long dim  = *((long long*) args->args[1]);
@@ -2243,9 +2288,9 @@ extern "C" long long myvector_is_valid(
   return 1; // success
 }
 
-extern "C" void myvector_is_valid_deinit(UDF_INIT *) { }
+PLUGIN_EXPORT void myvector_is_valid_deinit(UDF_INIT *) { }
 
-extern "C" bool myvector_row_distance_init(UDF_INIT *initid, UDF_ARGS *args,
+PLUGIN_EXPORT bool myvector_row_distance_init(UDF_INIT *initid, UDF_ARGS *args,
                                            char *message)
 {
     if (!initid || args->arg_count != 1)
@@ -2259,7 +2304,7 @@ extern "C" bool myvector_row_distance_init(UDF_INIT *initid, UDF_ARGS *args,
     return false;
 }
 
-extern "C" double myvector_row_distance(UDF_INIT *, UDF_ARGS *args, char *,
+PLUGIN_EXPORT double myvector_row_distance(UDF_INIT *, UDF_ARGS *args, char *,
                                         char *)
 {
     double dist =  99999999999.99;
@@ -2273,7 +2318,7 @@ extern "C" double myvector_row_distance(UDF_INIT *, UDF_ARGS *args, char *,
 
     return dist;
 }
-extern "C" void myvector_row_distance_deinit(UDF_INIT *) { }
+PLUGIN_EXPORT void myvector_row_distance_deinit(UDF_INIT *) { }
 
 bool isAfter(const string & binlogfile2, const size_t binlogpos2,
              const string & binlogfile1, const size_t binlogpos1)

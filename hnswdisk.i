@@ -310,7 +310,7 @@
 
         struct timeval tv;
         gettimeofday(&tv, nullptr);
-        char *ts = ctime(&tv.tv_sec);
+        char *ts = ctime((const time_t *)&tv.tv_sec);
         std::string tstr(ts, strlen(ts) - 1);
 
         std::stringstream ss;

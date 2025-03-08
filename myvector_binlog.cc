@@ -59,7 +59,15 @@
 #include "sql_common.h"
 #include "sql_string.h"
 #include "typelib.h"
+
+#ifdef WIN32
+#include <io.h>
+
+static void usleep(int usec) { ::Sleep(usec / 1000); }
+
+#else
 #include <unistd.h>
+#endif
 
 #include "myvector.h"
 using namespace std;
@@ -730,7 +738,7 @@ void myvector_binlog_loop(int id) {
   TableMapEvent tev;
   while (!mysql_binlog_fetch(&mysql,&rpl)) { 
 
-#if MYSQL_VERSION_ID >= 90100
+#if MYSQL_VERSION_ID >= 80404
      mysql::binlog::event::Log_event_type type = (mysql::binlog::event::Log_event_type)rpl.buffer[1 + EVENT_TYPE_OFFSET];
 #else
      Log_event_type type      = (Log_event_type)rpl.buffer[1 + EVENT_TYPE_OFFSET];
