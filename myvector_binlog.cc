@@ -73,6 +73,8 @@ static void usleep(int usec) { ::Sleep(usec / 1000); }
 using namespace std;
 #include "myvectorutils.h"
 
+extern char *myvector_index_dir;
+
 /// Format_description_event glob_description_event(BINLOG_VERSION, server_version);
 
 void myvector_table_op(const string &dbname, const string &tbname, const string &cname,
@@ -620,7 +622,7 @@ void BuildMyVectorIndexSQL(const char *db, const char *table, const char *idcol,
     snprintf(errorbuf, MYVECTOR_BUFF_SIZE, "SUCCESS: Index created & saved at (%s %lu)"
              ", rows : %lu.", currentBinlogFile.c_str(), currentBinlogPos, nRows);
 
-    vi->saveIndex("/mysqldata","build");
+    vi->saveIndex(myvector_index_dir, "build");
 
     string key = string(db) + "." + string(table);
 
