@@ -1,6 +1,8 @@
 ***Amazon Product Catalog Dataset with Embeddings***
 
-This is the best MyVector Demo! We are going to load a real world product catalog (from Amazon) into a MySQL database, build an HNSW index and then use vector search.
+This is the best MyVector Demo! We are going to load a real world product catalog (from Amazon) into a MySQL database, build an HNSW index and then perform vector search to find semantically relevant results.
+
+Sneak Peek : https://asciinema.org/a/709302
 
 Dataset Source : https://www.kaggle.com/datasets/piyushjain16/amazon-product-data
 
@@ -34,6 +36,19 @@ $ wget "https://drive.usercontent.google.com/download?id=1EnpCL7kqc1xT5HSPyxBqRl
 
 Both the scripts run the INSERTS under a single transaction and COMMIT at the end. It should take around a couple of minutes each to execute the load scripts.
 
+Example command to run the INSERT scripts
+
+```
+$ gunzip insert1.sql.gz
+
+$ mysql -u <user> -p<password> < insert1.sql
+
+$ gunzip insert2.sql.gz
+
+$ mysql -u <user> -p<password> < insert2.sql
+
+```
+
 - Create the Vector Index
 
 ```
@@ -46,7 +61,7 @@ This step requires around 9GB of memory if 2 million rows were loaded into the t
 
 The process of semantic search is simple - Accept a search query from user in natural language -> Embed the search query using the embedding model -> Search the query embedding vector in the vector index to find the nearest neighbours -> Retrieve rows from the MySQL operation table corresponding to the neighbours
 
-A complete Python script is provided below. 
+A complete Python script is provided below. Make sure to edit the connection properties.
 
 ```
 # search.py - MyVector Demo Script
@@ -75,8 +90,8 @@ print("Connecting to MySQL ....", flush=True)
 
 mydb = mysql.connector.connect(
   host="localhost",
-  user="root",
-  password="root123",
+  user="<user>",
+  password="<password>",
   unix_socket="/tmp/mysql.sock",
   database="test"
 
