@@ -11,6 +11,7 @@ mysql>  source create.sql
 
 mysql>  source insert50d.sql
 
+-- Note that buildindex.sql will need editing to specific the exact database/table
 mysql>  source buildindex.sql
 
 ```
