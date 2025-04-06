@@ -14,8 +14,15 @@ https://hub.docker.com/r/mysql/mysql-server/
 _What is in the docker image?_
 
 Pre-built MyVector plugin (myvector.so) and installation script (myvectorplugin.sql)
+
+```
 -  /usr/lib64/mysql/plugin/myvector.so
 -  /usr/share/mysql-<version>/myvectorplugin.sql
+-  /usr/share/mysql-<version>/myvector.README
+```
+
+NOTE NOTE : Detailed instructions are present inside the Docker image in :
+/usr/share/mysql-<version>/myvector.README
 
 _Installation_
 
