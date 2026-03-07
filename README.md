@@ -1,6 +1,12 @@
 **ANNOUNCEMENTS**
 
-ChatGPT generated descritpion of MyVector (concise and accurate!) :
+Active development for this repo has been moved to https://github.com/askdba/myvector .
+Please open an issue in that repository. 
+
+
+**EOM ANNOUNCEMENTS**
+
+ChatGPT generated description of MyVector (concise and accurate!) :
 
 https://chatgpt.com/share/67b4af65-7d20-8011-aaa2-ff79442055b0
 
